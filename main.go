@@ -16,7 +16,7 @@ import (
 	"github.com/u16-io/FindSenryu4Discord/model"
 	"github.com/u16-io/FindSenryu4Discord/pkg/backup"
 	"github.com/u16-io/FindSenryu4Discord/pkg/health"
-	"github.com/u16-io/FindSenryu4Discord/pkg/intelligence"
+	"github.com/u16-io/FindSenryu4Discord/pkg/adminnotify"
 	"github.com/u16-io/FindSenryu4Discord/pkg/logger"
 	"github.com/u16-io/FindSenryu4Discord/pkg/metrics"
 	"github.com/u16-io/FindSenryu4Discord/pkg/permissions"
@@ -28,7 +28,7 @@ import (
 
 var (
 	startTime           time.Time
-	intelligenceManager *intelligence.Manager
+	adminNotifier *adminnotify.Manager
 	botReady            atomic.Bool
 
 	userCommands = []*discordgo.ApplicationCommand{
@@ -143,6 +143,7 @@ func main() {
 	dg.AddHandler(messageCreate)
 	dg.AddHandler(interactionCreate)
 	dg.AddHandler(guildCreate)
+	dg.AddHandler(guildDelete)
 
 	// Open connection
 	if err := dg.Open(); err != nil {
@@ -201,10 +202,10 @@ func main() {
 	dbStats := db.GetStats()
 	metrics.SetDatabaseStats(dbStats.SenryuCount, dbStats.MutedChannelCount)
 
-	// Initialize intelligence manager
+	// Initialize admin notification manager
 	if conf.Admin.LogChannelID != "" {
-		intelligenceManager = intelligence.NewManager(dg, conf.Admin.LogChannelID)
-		intelligenceManager.Start()
+		adminNotifier = adminnotify.NewManager(dg, conf.Admin.LogChannelID)
+		adminNotifier.Start()
 	}
 	botReady.Store(true)
 
@@ -232,9 +233,9 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	// Stop intelligence manager
-	if intelligenceManager != nil {
-		intelligenceManager.Stop(ctx)
+	// Stop admin notification manager
+	if adminNotifier != nil {
+		adminNotifier.Stop(ctx)
 	}
 
 	// Stop backup manager
@@ -287,8 +288,27 @@ func main() {
 func guildCreate(s *discordgo.Session, g *discordgo.GuildCreate) {
 	logger.Info("Joined guild", "name", g.Name, "id", g.ID)
 	metrics.SetConnectedGuilds(len(s.State.Guilds))
-	if botReady.Load() && intelligenceManager != nil {
-		intelligenceManager.NotifyGuildJoin(g.Guild)
+	if botReady.Load() && adminNotifier != nil {
+		adminNotifier.NotifyGuildJoin(g.Guild)
+	}
+}
+
+func guildDelete(s *discordgo.Session, g *discordgo.GuildDelete) {
+	logger.Info("Left guild", "id", g.ID)
+	metrics.SetConnectedGuilds(len(s.State.Guilds))
+
+	// Clean up guild data
+	senryuCount, err := service.DeleteSenryuByServer(g.ID)
+	if err != nil {
+		logger.Error("Failed to clean up senryus on guild leave", "error", err, "guild_id", g.ID)
+	}
+	optOutCount, err := service.DeleteOptOutByServer(g.ID)
+	if err != nil {
+		logger.Error("Failed to clean up opt-outs on guild leave", "error", err, "guild_id", g.ID)
+	}
+
+	if botReady.Load() && adminNotifier != nil {
+		adminNotifier.NotifyGuildLeave(g, senryuCount, optOutCount)
 	}
 }
 
