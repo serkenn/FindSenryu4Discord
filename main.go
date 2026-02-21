@@ -14,9 +14,9 @@ import (
 	"github.com/u16-io/FindSenryu4Discord/config"
 	"github.com/u16-io/FindSenryu4Discord/db"
 	"github.com/u16-io/FindSenryu4Discord/model"
+	"github.com/u16-io/FindSenryu4Discord/pkg/adminnotify"
 	"github.com/u16-io/FindSenryu4Discord/pkg/backup"
 	"github.com/u16-io/FindSenryu4Discord/pkg/health"
-	"github.com/u16-io/FindSenryu4Discord/pkg/adminnotify"
 	"github.com/u16-io/FindSenryu4Discord/pkg/logger"
 	"github.com/u16-io/FindSenryu4Discord/pkg/metrics"
 	"github.com/u16-io/FindSenryu4Discord/pkg/permissions"
@@ -27,9 +27,9 @@ import (
 )
 
 var (
-	startTime           time.Time
+	startTime     time.Time
 	adminNotifier *adminnotify.Manager
-	botReady            atomic.Bool
+	botReady      atomic.Bool
 
 	userCommands = []*discordgo.ApplicationCommand{
 		{
@@ -364,16 +364,7 @@ func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 		return
 	}
 
-	// Channel type behavior
-	switch ch.Type {
-	case discordgo.ChannelTypeDM, discordgo.ChannelTypeGroupDM:
-		s.ChannelMessageSend(m.ChannelID, "個チャはダメです")
-		return
-	case discordgo.ChannelTypeGuildVoice, discordgo.ChannelTypeGuildStageVoice:
-		return
-	}
-
-	if ch.Type != discordgo.ChannelTypeGuildText {
+	if !isSenryuTargetChannel(ch.Type) {
 		return
 	}
 
@@ -386,7 +377,7 @@ func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 		return
 	}
 
-	if !service.IsMute(m.ChannelID) {
+	if !service.IsMute(m.ChannelID) && !isParentChannelMuted(ch) {
 		if m.Author.ID != s.State.User.ID {
 			if service.IsDetectionOptedOut(m.GuildID, m.Author.ID) {
 				return
@@ -417,6 +408,29 @@ func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 			}
 		}
 	}
+}
+
+// isSenryuTargetChannel returns true if the channel type is a target for senryu detection.
+func isSenryuTargetChannel(ct discordgo.ChannelType) bool {
+	switch ct {
+	case discordgo.ChannelTypeGuildText,
+		discordgo.ChannelTypeGuildVoice,
+		discordgo.ChannelTypeGuildStageVoice,
+		discordgo.ChannelTypeGuildNewsThread,
+		discordgo.ChannelTypeGuildPublicThread,
+		discordgo.ChannelTypeGuildPrivateThread:
+		return true
+	default:
+		return false
+	}
+}
+
+// isParentChannelMuted checks if the parent channel of a thread is muted.
+func isParentChannelMuted(ch *discordgo.Channel) bool {
+	if ch.ParentID == "" {
+		return false
+	}
+	return service.IsMute(ch.ParentID)
 }
 
 var medals = []string{"🥇", "🥈", "🥉", "🎖️", "🎖️"}
