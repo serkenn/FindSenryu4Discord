@@ -27,9 +27,11 @@ import (
 )
 
 var (
-	startTime     time.Time
-	adminNotifier *adminnotify.Manager
-	botReady      atomic.Bool
+	startTime         time.Time
+	adminNotifier     *adminnotify.Manager
+	botReady          atomic.Bool
+	guildCacheTimer   atomic.Pointer[time.Timer]
+	guildCacheSession atomic.Pointer[discordgo.Session]
 
 	// adminPermission is used for DefaultMemberPermissions on admin-only commands.
 	adminPermission int64 = discordgo.PermissionAdministrator
@@ -158,6 +160,7 @@ func main() {
 	dg.AddHandler(interactionCreate)
 	dg.AddHandler(guildCreate)
 	dg.AddHandler(guildDelete)
+	dg.AddHandler(onConnect)
 
 	// Open connection
 	if err := dg.Open(); err != nil {
@@ -299,10 +302,33 @@ func main() {
 	logger.Info("Shutdown complete")
 }
 
+func onConnect(s *discordgo.Session, _ *discordgo.Connect) {
+	logger.Info("Gateway connected, caching guilds...")
+	botReady.Store(false)
+	guildCacheSession.Store(s)
+}
+
 func guildCreate(s *discordgo.Session, g *discordgo.GuildCreate) {
-	logger.Info("Joined guild", "name", g.Name, "id", g.ID)
 	metrics.SetConnectedGuilds(len(s.State.Guilds))
-	if botReady.Load() && adminNotifier != nil {
+	if !botReady.Load() {
+		logger.Debug("Guild cache", "name", g.Name, "id", g.ID)
+		// Debounce: reset timer on each GUILD_CREATE during cache burst.
+		// When no more events arrive within 5s, mark as ready.
+		if t := guildCacheTimer.Load(); t != nil {
+			t.Stop()
+		}
+		t := time.AfterFunc(5*time.Second, func() {
+			cs := guildCacheSession.Load()
+			if cs != nil {
+				logger.Info("Guild cache complete, bot is ready", "guilds", len(cs.State.Guilds))
+			}
+			botReady.Store(true)
+		})
+		guildCacheTimer.Store(t)
+		return
+	}
+	logger.Info("Joined guild", "name", g.Name, "id", g.ID)
+	if adminNotifier != nil {
 		adminNotifier.NotifyGuildJoin(g.Guild)
 	}
 }
