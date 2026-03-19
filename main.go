@@ -10,6 +10,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/cockroachdb/errors"
 	"github.com/u16-io/FindSenryu4Discord/commands"
 	"github.com/u16-io/FindSenryu4Discord/config"
 	"github.com/u16-io/FindSenryu4Discord/db"
@@ -458,7 +459,7 @@ func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 			h := haiku.Find(m.Content, []int{5, 7, 5})
 			if len(h) != 0 {
 				senryu := strings.Split(h[0], " ")
-				_, err := service.CreateSenryu(
+				created, err := service.CreateSenryu(
 					model.Senryu{
 						ServerID:  m.GuildID,
 						AuthorID:  m.Author.ID,
@@ -470,6 +471,7 @@ func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 				if err != nil {
 					logger.Error("Failed to create senryu", "error", err)
 					metrics.RecordError("database")
+					return
 				}
 				if _, err := s.ChannelMessageSendReply(
 					m.ChannelID,
@@ -477,6 +479,12 @@ func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 					m.Reference(),
 				); err != nil {
 					logger.Warn("Failed to send senryu reply", "error", err, "channel_id", m.ChannelID)
+					// 返信に失敗した場合、保存した川柳を削除して整合性を保つ
+					if delErr := service.DeleteSenryu(int(created.ID), m.GuildID); delErr != nil {
+						logger.Error("Failed to rollback senryu after reply failure", "error", delErr, "senryu_id", created.ID)
+					} else {
+						logger.Info("Rolled back senryu after reply failure", "senryu_id", created.ID, "channel_id", m.ChannelID)
+					}
 				}
 			}
 		}
@@ -623,8 +631,12 @@ func handleYomeYomuna(m *discordgo.MessageCreate, s *discordgo.Session) bool {
 	case "詠むな":
 		senryu, err := service.GetLastSenryu(m.GuildID, m.Author.ID)
 		if err != nil {
-			logger.Error("Failed to get last senryu", "error", err)
-			s.MessageReactionAdd(m.ChannelID, m.ID, "❌")
+			if errors.Is(err, service.ErrSenryuNotFound) {
+				s.ChannelMessageSendReply(m.ChannelID, "まだ誰も詠んでいません。", m.Reference())
+			} else {
+				logger.Error("Failed to get last senryu", "error", err)
+				s.MessageReactionAdd(m.ChannelID, m.ID, "❌")
+			}
 		} else {
 			if _, err := s.ChannelMessageSendReply(
 				m.ChannelID,

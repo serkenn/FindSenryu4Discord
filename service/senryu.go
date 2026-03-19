@@ -46,6 +46,9 @@ func GetLastSenryu(serverID string, userID string) (string, error) {
 
 	s := model.Senryu{}
 	if err := db.DB.Where(&model.Senryu{ServerID: serverID}).Last(&s).Error; err != nil {
+		if gorm.IsRecordNotFoundError(err) {
+			return "", ErrSenryuNotFound
+		}
 		metrics.RecordError("database")
 		logger.Warn("Failed to get last senryu",
 			"error", err,
