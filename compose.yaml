@@ -1,7 +1,15 @@
 services:
+  init:
+    image: busybox:latest
+    volumes:
+      - "./data:/app/data"
+    command: ["sh", "-c", "mkdir -p /app/data/backups && chown -R 65532:65532 /app/data"]
   app:
     build: .
     restart: always
+    depends_on:
+      init:
+        condition: service_completed_successfully
     ports:
       - "9090:9090"
     volumes:

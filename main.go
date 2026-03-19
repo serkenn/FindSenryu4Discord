@@ -34,6 +34,7 @@ var (
 	botReady          atomic.Bool
 	guildCacheTimer   atomic.Pointer[time.Timer]
 	guildCacheSession atomic.Pointer[discordgo.Session]
+	allSessions       []*discordgo.Session
 
 	// adminPermission is used for DefaultMemberPermissions on admin-only commands.
 	adminPermission int64 = discordgo.PermissionAdministrator
@@ -153,30 +154,61 @@ func main() {
 	}
 	commands.SetStartTime(startTime)
 
-	// Create Discord session
-	dg, err := discordgo.New("Bot " + conf.Discord.Token)
+	// Get recommended shard count from Discord
+	tmpSession, err := discordgo.New("Bot " + conf.Discord.Token)
 	if err != nil {
 		logger.Error("Failed to create Discord session", "error", err)
 		os.Exit(1)
 	}
+	gatewayBot, err := tmpSession.GatewayBot()
+	if err != nil {
+		logger.Error("Failed to get gateway bot info", "error", err)
+		os.Exit(1)
+	}
+	shardCount := gatewayBot.Shards
+	if shardCount < 1 {
+		shardCount = 1
+	}
+	logger.Info("Discord gateway info", "recommended_shards", gatewayBot.Shards, "using_shards", shardCount)
 
-	// Set Gateway Intents explicitly for state cache and message content
-	dg.Identify.Intents = discordgo.IntentGuilds |
+	// Gateway Intents
+	intents := discordgo.IntentGuilds |
 		discordgo.IntentGuildMessages |
 		discordgo.IntentMessageContent
 
-	// Add handlers
-	dg.AddHandler(messageCreate)
-	dg.AddHandler(interactionCreate)
-	dg.AddHandler(guildCreate)
-	dg.AddHandler(guildDelete)
-	dg.AddHandler(onConnect)
+	// Create and open sessions for each shard
+	allSessions = make([]*discordgo.Session, shardCount)
+	for i := 0; i < shardCount; i++ {
+		s, err := discordgo.New("Bot " + conf.Discord.Token)
+		if err != nil {
+			logger.Error("Failed to create Discord session", "error", err, "shard", i)
+			os.Exit(1)
+		}
+		s.ShardID = i
+		s.ShardCount = shardCount
+		s.Identify.Intents = intents
 
-	// Open connection
-	if err := dg.Open(); err != nil {
-		logger.Error("Failed to open Discord connection", "error", err)
-		os.Exit(1)
+		s.AddHandler(messageCreate)
+		s.AddHandler(interactionCreate)
+		s.AddHandler(guildCreate)
+		s.AddHandler(guildDelete)
+		s.AddHandler(onConnect)
+
+		if err := s.Open(); err != nil {
+			logger.Error("Failed to open Discord connection", "error", err, "shard", i)
+			os.Exit(1)
+		}
+		logger.Info("Shard connected", "shard_id", i, "shard_count", shardCount)
+		allSessions[i] = s
+
+		// Rate limit: wait between shard connections (Discord recommends ~5s)
+		if i < shardCount-1 {
+			time.Sleep(5 * time.Second)
+		}
 	}
+
+	// Use shard 0 as the primary session for command registration
+	dg := allSessions[0]
 
 	// Conditionally add /contact command
 	if conf.Admin.ContactChannelID != "" {
@@ -218,12 +250,10 @@ func main() {
 	// Update game status
 	dg.UpdateGameStatus(1, conf.Discord.Playing)
 
-	// Log connected guilds
-	logger.Info("Connected guilds", "count", len(dg.State.Guilds))
-	metrics.SetConnectedGuilds(len(dg.State.Guilds))
-	for _, guild := range dg.State.Guilds {
-		logger.Debug("Connected to guild", "name", guild.Name, "id", guild.ID)
-	}
+	// Log connected guilds (aggregate across all shards)
+	totalGuilds := countAllGuilds()
+	logger.Info("Connected guilds", "count", totalGuilds, "shards", shardCount)
+	metrics.SetConnectedGuilds(totalGuilds)
 
 	// Update database stats in metrics
 	dbStats := db.GetStats()
@@ -299,9 +329,11 @@ func main() {
 		}
 	}
 
-	// Close Discord connection
-	if err := dg.Close(); err != nil {
-		logger.Error("Failed to close Discord connection", "error", err)
+	// Close all Discord shard connections
+	for _, s := range allSessions {
+		if err := s.Close(); err != nil {
+			logger.Error("Failed to close Discord connection", "error", err, "shard", s.ShardID)
+		}
 	}
 
 	// Close database
@@ -318,8 +350,16 @@ func onConnect(s *discordgo.Session, _ *discordgo.Connect) {
 	guildCacheSession.Store(s)
 }
 
+func countAllGuilds() int {
+	total := 0
+	for _, s := range allSessions {
+		total += len(s.State.Guilds)
+	}
+	return total
+}
+
 func guildCreate(s *discordgo.Session, g *discordgo.GuildCreate) {
-	metrics.SetConnectedGuilds(len(s.State.Guilds))
+	metrics.SetConnectedGuilds(countAllGuilds())
 	if !botReady.Load() {
 		logger.Debug("Guild cache", "name", g.Name, "id", g.ID)
 		// Debounce: reset timer on each GUILD_CREATE during cache burst.
@@ -328,10 +368,7 @@ func guildCreate(s *discordgo.Session, g *discordgo.GuildCreate) {
 			t.Stop()
 		}
 		t := time.AfterFunc(5*time.Second, func() {
-			cs := guildCacheSession.Load()
-			if cs != nil {
-				logger.Info("Guild cache complete, bot is ready", "guilds", len(cs.State.Guilds))
-			}
+			logger.Info("Guild cache complete, bot is ready", "guilds", countAllGuilds())
 			botReady.Store(true)
 		})
 		guildCacheTimer.Store(t)
@@ -345,7 +382,7 @@ func guildCreate(s *discordgo.Session, g *discordgo.GuildCreate) {
 
 func guildDelete(s *discordgo.Session, g *discordgo.GuildDelete) {
 	logger.Info("Left guild", "id", g.ID)
-	metrics.SetConnectedGuilds(len(s.State.Guilds))
+	metrics.SetConnectedGuilds(countAllGuilds())
 
 	// Clean up guild data
 	senryuCount, err := service.DeleteSenryuByServer(g.ID)
