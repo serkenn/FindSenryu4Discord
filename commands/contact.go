@@ -65,9 +65,9 @@ func HandleContactCommand(s *discordgo.Session, i *discordgo.InteractionCreate) 
 					Components: []discordgo.MessageComponent{
 						discordgo.TextInput{
 							CustomID:    ContactMessageInputID,
-							Label:       "内容",
+							Label:       "内容（送信前に /doctor コマンドもお試しください）",
 							Style:       discordgo.TextInputParagraph,
-							Placeholder: "お問い合わせ内容を入力してください",
+							Placeholder: "川柳が検出されない場合は、まず /doctor コマンドで診断をお試しください。権限やチャンネル設定の問題を自動で確認できます。",
 							Required:    true,
 							MaxLength:   2000,
 						},

@@ -8,7 +8,7 @@
 ## Invite
 
 <p align="center">
-  <a href="https://discordapp.com/api/oauth2/authorize?client_id=480281065588785162&permissions=378880&scope=bot">
+  <a href="https://discordapp.com/api/oauth2/authorize?client_id=480281065588785162&permissions=379904&scope=bot">
     <img width="400" src="./.github/img/discord-logo.png">
   </a>
 </p>
@@ -66,6 +66,12 @@
 ```
 
 > チャンネルタイプ別の川柳検出設定を変更します（サーバー管理者のみ）。ボタン付きの設定パネルが表示され、チャンネルタイプごとに検出の有効/無効を切り替えられます。
+
+```
+/doctor
+```
+
+> このチャンネルでBotが正常に動作するか診断します。権限・チャンネルタイプ・ミュート状態などをチェックし、問題があれば対処方法を表示します。
 
 ```
 /contact
