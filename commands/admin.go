@@ -16,6 +16,7 @@ import (
 var (
 	backupManager *backup.Manager
 	startTime     time.Time
+	allSessions   []*discordgo.Session
 )
 
 // SetBackupManager sets the backup manager for admin commands
@@ -28,6 +29,22 @@ func SetStartTime(t time.Time) {
 	startTime = t
 }
 
+// SetAllSessions sets all shard sessions for cross-shard guild counting
+func SetAllSessions(sessions []*discordgo.Session) {
+	allSessions = sessions
+}
+
+// allGuilds returns guilds from all shard sessions
+func allGuilds() []*discordgo.Guild {
+	var guilds []*discordgo.Guild
+	for _, s := range allSessions {
+		if s != nil {
+			guilds = append(guilds, s.State.Guilds...)
+		}
+	}
+	return guilds
+}
+
 // AdminCommands returns the admin slash commands
 func AdminCommands() []*discordgo.ApplicationCommand {
 	return []*discordgo.ApplicationCommand{
@@ -38,11 +55,6 @@ func AdminCommands() []*discordgo.ApplicationCommand {
 				{
 					Name:        "stats",
 					Description: "Bot統計情報を表示します",
-					Type:        discordgo.ApplicationCommandOptionSubCommand,
-				},
-				{
-					Name:        "guilds",
-					Description: "参加サーバー一覧を表示します",
 					Type:        discordgo.ApplicationCommandOptionSubCommand,
 				},
 				{
@@ -76,8 +88,6 @@ func HandleAdminCommand(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	switch options[0].Name {
 	case "stats":
 		handleStatsCommand(s, i)
-	case "guilds":
-		handleGuildsCommand(s, i)
 	case "backup":
 		handleBackupCommand(s, i)
 	}
@@ -101,7 +111,7 @@ func handleStatsCommand(s *discordgo.Session, i *discordgo.InteractionCreate) {
 			},
 			{
 				Name:   "Connected Guilds",
-				Value:  fmt.Sprintf("%d", len(s.State.Guilds)),
+				Value:  fmt.Sprintf("%d", len(allGuilds())),
 				Inline: true,
 			},
 			{
@@ -125,50 +135,6 @@ func handleStatsCommand(s *discordgo.Session, i *discordgo.InteractionCreate) {
 				Inline: true,
 			},
 		},
-	}
-
-	s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
-		Type: discordgo.InteractionResponseChannelMessageWithSource,
-		Data: &discordgo.InteractionResponseData{
-			Embeds: []*discordgo.MessageEmbed{embed},
-			Flags:  discordgo.MessageFlagsEphemeral,
-		},
-	})
-}
-
-func handleGuildsCommand(s *discordgo.Session, i *discordgo.InteractionCreate) {
-	guilds := s.State.Guilds
-	if len(guilds) == 0 {
-		respondError(s, i, "参加しているサーバーがありません")
-		return
-	}
-
-	// Limit to first 25 guilds for embed field limit
-	displayCount := len(guilds)
-	if displayCount > 25 {
-		displayCount = 25
-	}
-
-	fields := make([]*discordgo.MessageEmbedField, 0, displayCount)
-	for idx, guild := range guilds[:displayCount] {
-		memberCount := guild.MemberCount
-		fields = append(fields, &discordgo.MessageEmbedField{
-			Name:   fmt.Sprintf("%d. %s", idx+1, guild.Name),
-			Value:  fmt.Sprintf("ID: %s\nMembers: %d", guild.ID, memberCount),
-			Inline: true,
-		})
-	}
-
-	embed := &discordgo.MessageEmbed{
-		Title:       fmt.Sprintf("Connected Guilds (%d total)", len(guilds)),
-		Color:       0x0099ff,
-		Fields:      fields,
-		Timestamp:   time.Now().Format(time.RFC3339),
-		Description: "",
-	}
-
-	if len(guilds) > 25 {
-		embed.Description = fmt.Sprintf("Showing first 25 of %d guilds", len(guilds))
 	}
 
 	s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{

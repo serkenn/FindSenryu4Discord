@@ -210,6 +210,9 @@ func main() {
 		}
 	}
 
+	// Share all sessions with commands package for cross-shard guild counting
+	commands.SetAllSessions(allSessions)
+
 	// Use shard 0 as the primary session for command registration
 	dg := allSessions[0]
 
