@@ -623,13 +623,13 @@ func handleRankCommand(s *discordgo.Session, i *discordgo.InteractionCreate) {
 		Type:      discordgo.EmbedTypeRich,
 		Title:     "サーバー内ランキング",
 		Timestamp: time.Now().Format(time.RFC3339),
-		Footer: &discordgo.MessageEmbedFooter{
-			Text:    "This bot was made by 0x307e.",
-			IconURL: "https://github.com/0x307e.png",
-		},
 		Fields: []*discordgo.MessageEmbedField{},
 	}
 	if guild != nil {
+		embed.Footer = &discordgo.MessageEmbedFooter{
+			Text:    guild.Name,
+			IconURL: guild.IconURL(""),
+		}
 		embed.Thumbnail = &discordgo.MessageEmbedThumbnail{
 			URL: guild.IconURL(""),
 		}
