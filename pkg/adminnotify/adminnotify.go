@@ -13,6 +13,7 @@ import (
 // Manager handles admin notifications (guild join/leave, daily summary).
 type Manager struct {
 	session        *discordgo.Session
+	allSessions    []*discordgo.Session
 	logChannelID   string
 	prevGuildCount int
 	stopCh         chan struct{}
@@ -23,12 +24,28 @@ type Manager struct {
 // It captures the current guild count as the baseline for daily diff.
 func NewManager(session *discordgo.Session, logChannelID string) *Manager {
 	return &Manager{
-		session:        session,
-		logChannelID:   logChannelID,
-		prevGuildCount: len(session.State.Guilds),
-		stopCh:         make(chan struct{}),
-		stoppedCh:      make(chan struct{}),
+		session:      session,
+		logChannelID: logChannelID,
+		stopCh:       make(chan struct{}),
+		stoppedCh:    make(chan struct{}),
 	}
+}
+
+// SetAllSessions sets all shard sessions for cross-shard guild counting.
+// prevGuildCount is initialized here once all shards are connected.
+func (m *Manager) SetAllSessions(sessions []*discordgo.Session) {
+	m.allSessions = sessions
+	m.prevGuildCount = m.countAllGuilds()
+}
+
+func (m *Manager) countAllGuilds() int {
+	total := 0
+	for _, s := range m.allSessions {
+		if s != nil {
+			total += len(s.State.Guilds)
+		}
+	}
+	return total
 }
 
 // Start starts the daily summary scheduler in a goroutine.
@@ -159,7 +176,7 @@ func (m *Manager) sendDailySummary() {
 		count = -1
 	}
 
-	currentGuilds := len(m.session.State.Guilds)
+	currentGuilds := m.countAllGuilds()
 	guildDiff := currentGuilds - m.prevGuildCount
 	m.prevGuildCount = currentGuilds
 

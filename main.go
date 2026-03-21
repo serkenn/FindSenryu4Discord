@@ -263,6 +263,7 @@ func main() {
 	// Initialize admin notification manager
 	if conf.Admin.LogChannelID != "" {
 		adminNotifier = adminnotify.NewManager(dg, conf.Admin.LogChannelID)
+		adminNotifier.SetAllSessions(allSessions)
 		adminNotifier.Start()
 	}
 	botReady.Store(true)
