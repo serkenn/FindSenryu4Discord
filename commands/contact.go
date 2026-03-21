@@ -217,6 +217,14 @@ func HandleContactReplyButton(s *discordgo.Session, i *discordgo.InteractionCrea
 
 // HandleContactReplyModalSubmit handles the reply modal submission
 func HandleContactReplyModalSubmit(s *discordgo.Session, i *discordgo.InteractionCreate) {
+	// DM送信やチャンネル送信に時間がかかる場合があるため、先にDeferする
+	s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+		Type: discordgo.InteractionResponseDeferredChannelMessageWithSource,
+		Data: &discordgo.InteractionResponseData{
+			Flags: discordgo.MessageFlagsEphemeral,
+		},
+	})
+
 	data := i.ModalSubmitData()
 	payload := strings.TrimPrefix(data.CustomID, ReplyModalPrefix)
 	targetUserID, sourceChannelID := parseReplyTarget(payload)
@@ -249,7 +257,9 @@ func HandleContactReplyModalSubmit(s *discordgo.Session, i *discordgo.Interactio
 			"error", err, "user_id", targetUserID, "channel_id", sourceChannelID)
 
 		if sourceChannelID == "" {
-			respondEphemeral(s, i, "DMの送信に失敗しました。送信元チャンネルの情報がないため、返信できませんでした。")
+			s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
+				Content: strPtr("DMの送信に失敗しました。送信元チャンネルの情報がないため、返信できませんでした。"),
+			})
 			return
 		}
 
@@ -260,12 +270,14 @@ func HandleContactReplyModalSubmit(s *discordgo.Session, i *discordgo.Interactio
 		if err != nil {
 			logger.Error("Failed to send channel reply", "error", err,
 				"user_id", targetUserID, "channel_id", sourceChannelID)
-			respondEphemeral(s, i, "DMおよびチャンネルへの返信に失敗しました。")
+			s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
+				Content: strPtr("DMおよびチャンネルへの返信に失敗しました。"),
+			})
 			return
 		}
 	}
 
-	// 元のメッセージを更新: 返信済みフィールド追加 + ボタン無効化
+	// 送信成功後のみ、元メッセージを「返信済み」に更新
 	if i.Message != nil {
 		var replierName string
 		if i.Member != nil {
@@ -308,9 +320,14 @@ func HandleContactReplyModalSubmit(s *discordgo.Session, i *discordgo.Interactio
 	}
 
 	if sentViaDM {
-		respondEphemeral(s, i, "DMで返信を送信しました ✅")
+		s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
+			Content: strPtr("DMで返信を送信しました ✅"),
+		})
 	} else {
-		respondEphemeral(s, i, fmt.Sprintf("DMの送信に失敗したため、%s に返信しました ✅", channelLabel(s, sourceChannelID)))
+		msg := fmt.Sprintf("DMの送信に失敗したため、%s に返信しました ✅", channelLabel(s, sourceChannelID))
+		s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
+			Content: strPtr(msg),
+		})
 	}
 }
 
