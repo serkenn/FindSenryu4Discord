@@ -3,6 +3,7 @@ module github.com/u16-io/FindSenryu4Discord
 go 1.24.0
 
 require (
+	github.com/0x307e/go-haiku v0.0.0-20260320150047-9f8a32a1aa19
 	github.com/bwmarrin/discordgo v0.29.0
 	github.com/cockroachdb/errors v1.11.3
 	github.com/ikawaha/kagome-dict/uni v1.1.9
@@ -12,7 +13,6 @@ require (
 	github.com/knadh/koanf/providers/file v1.1.2
 	github.com/knadh/koanf/v2 v2.1.2
 	github.com/lib/pq v1.10.9
-	github.com/mattn/go-haiku v0.0.44
 	github.com/mattn/go-sqlite3 v1.14.33
 	github.com/prometheus/client_golang v1.20.5
 )

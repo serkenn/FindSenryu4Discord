@@ -1,3 +1,5 @@
+github.com/0x307e/go-haiku v0.0.0-20260320150047-9f8a32a1aa19 h1:kVcf6OlER+XLJGe6s+61CvHBm78wK9mRVyK+uYz2HHk=
+github.com/0x307e/go-haiku v0.0.0-20260320150047-9f8a32a1aa19/go.mod h1:67enA/WiHD0qaI9veaRUMzlUZCDc3SSySRcUsXUjeJk=
 github.com/PuerkitoBio/goquery v1.5.1/go.mod h1:GsLWisAFVj4WgDibEWF4pvYnkVQBpKBKeU+7zCJoLcc=
 github.com/andybalholm/cascadia v1.1.0/go.mod h1:GsXiBklL0woXo1j/WYWtSYYC4ouU9PqHO0sqidkEA4Y=
 github.com/beorn7/perks v1.0.1 h1:VlbKKnNfV8bJzeqoa4cOKqO6bYr3WgKZxO8Z16+hsOM=
@@ -75,8 +77,6 @@ github.com/kylelemons/godebug v1.1.0/go.mod h1:9/0rRGxNHcop5bhtWyNeEfOS8JIWk580+
 github.com/lib/pq v1.1.1/go.mod h1:5WUZQaWbwv1U+lTReE5YruASi9Al49XbQIvNi/34Woo=
 github.com/lib/pq v1.10.9 h1:YXG7RB+JIjhP29X+OtkiDnYaXQwpS4JEWq7dtCCRUEw=
 github.com/lib/pq v1.10.9/go.mod h1:AlVN5x4E4T544tWzH6hKfbfQvm3HdbOxrmggDNAPY9o=
-github.com/mattn/go-haiku v0.0.44 h1:GmzDSSejWHKKFCMiexvFKicHwhHaopVxV8tejDAKiSs=
-github.com/mattn/go-haiku v0.0.44/go.mod h1:1dRTtM8aphAGx6qIgoVbYVQGITpZEeG8Ii1GizAHhxo=
 github.com/mattn/go-sqlite3 v1.14.0/go.mod h1:JIl7NbARA7phWnGvh0LKTyg7S9BA+6gx71ShQilpsus=
 github.com/mattn/go-sqlite3 v1.14.33 h1:A5blZ5ulQo2AtayQ9/limgHEkFreKj1Dv226a1K73s0=
 github.com/mattn/go-sqlite3 v1.14.33/go.mod h1:Uh1q+B4BYcTPb+yiD3kU8Ct7aC0hY9fxUwlHK0RXw+Y=

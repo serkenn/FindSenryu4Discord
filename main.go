@@ -25,7 +25,7 @@ import (
 	"github.com/u16-io/FindSenryu4Discord/service"
 
 	"github.com/ikawaha/kagome-dict/uni"
-	"github.com/mattn/go-haiku"
+	"github.com/0x307e/go-haiku"
 	"github.com/bwmarrin/discordgo"
 )
 
