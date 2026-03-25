@@ -2,7 +2,14 @@ package model
 
 import "time"
 
-// Senryu is struct of senryu.
+// PoemType represents the type of detected poem.
+const (
+	PoemTypeSenryu  = "senryu"  // 川柳 (5-7-5)
+	PoemTypeTanka   = "tanka"   // 短歌 (5-7-5-7-7)
+	PoemTypeJiyuritsu = "jiyuritsu" // 自由律俳句 (whitelist match)
+)
+
+// Senryu is struct of senryu (also used for tanka and free-form haiku).
 type Senryu struct {
 	ID        int       `gorm:"primaryKey;autoIncrement"`
 	ServerID  string    `gorm:"column:server_id;index"`
@@ -10,6 +17,9 @@ type Senryu struct {
 	Kamigo    string    `gorm:"column:kamigo"`
 	Nakasichi string    `gorm:"column:nakasichi"`
 	Simogo    string    `gorm:"column:simogo"`
+	Shiku     string    `gorm:"column:shiku"`              // 四句 (tanka only)
+	Goku      string    `gorm:"column:goku"`               // 五句 (tanka only)
+	Type      string    `gorm:"column:type;default:senryu"` // senryu, tanka, jiyuritsu
 	Spoiler   *bool     `gorm:"column:spoiler;not null"`
 	CreatedAt time.Time `gorm:"column:created_at"`
 }

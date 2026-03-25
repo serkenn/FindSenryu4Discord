@@ -11,7 +11,7 @@ import (
 )
 
 // HandleTimeoutCommand handles the /timeout slash command.
-// Temporarily pauses senryu detection for the calling user.
+// Temporarily pauses senryu detection for the calling user in the current channel.
 func HandleTimeoutCommand(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	metrics.RecordCommandExecuted("timeout")
 
@@ -21,16 +21,16 @@ func HandleTimeoutCommand(s *discordgo.Session, i *discordgo.InteractionCreate) 
 	}
 
 	userID := getUserID(i)
+	channelID := i.ChannelID
 	options := i.ApplicationCommandData().Options
 
-	// Check if user wants to clear timeout
+	// No argument → show status
 	if len(options) == 0 {
-		// Show current status
-		remaining := service.GetTimeoutRemaining(i.GuildID, userID)
+		remaining := service.GetTimeoutRemaining(channelID, userID)
 		if remaining > 0 {
-			respondEphemeral(s, i, fmt.Sprintf("現在タイムアウト中です（残り %s）", formatDuration(remaining)))
+			respondEphemeral(s, i, fmt.Sprintf("このチャンネルでタイムアウト中です（残り %s）", formatDuration(remaining)))
 		} else {
-			respondEphemeral(s, i, "現在タイムアウトは設定されていません")
+			respondEphemeral(s, i, "このチャンネルではタイムアウトは設定されていません")
 		}
 		return
 	}
@@ -42,10 +42,10 @@ func HandleTimeoutCommand(s *discordgo.Session, i *discordgo.InteractionCreate) 
 	}
 
 	duration := time.Duration(minutes) * time.Minute
-	service.SetTimeout(i.GuildID, userID, duration)
+	service.SetTimeout(channelID, userID, duration)
 
-	logger.Info("User set timeout", "user_id", userID, "guild_id", i.GuildID, "minutes", minutes)
-	respondEphemeral(s, i, fmt.Sprintf("川柳検出を %s 一時停止しました ⏸️", formatDuration(duration)))
+	logger.Info("User set channel timeout", "user_id", userID, "channel_id", channelID, "minutes", minutes)
+	respondEphemeral(s, i, fmt.Sprintf("このチャンネルでの川柳検出を %s 一時停止しました ⏸️", formatDuration(duration)))
 }
 
 func formatDuration(d time.Duration) string {

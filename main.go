@@ -12,7 +12,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/cockroachdb/errors"
 	"github.com/u16-io/FindSenryu4Discord/commands"
 	"github.com/u16-io/FindSenryu4Discord/config"
 	"github.com/u16-io/FindSenryu4Discord/db"
@@ -49,28 +48,18 @@ var (
 
 	userCommands = []*discordgo.ApplicationCommand{
 		{
-			Name:        "mute",
-			Description: "このチャンネルでの川柳検出をミュートします",
+			Name:                     "mute",
+			Description:              "このチャンネルでの川柳検出をミュートします（管理者のみ）",
+			DefaultMemberPermissions: &adminPermission,
 		},
 		{
-			Name:        "unmute",
-			Description: "このチャンネルでの川柳検出のミュートを解除します",
+			Name:                     "unmute",
+			Description:              "このチャンネルでの川柳検出のミュートを解除します（管理者のみ）",
+			DefaultMemberPermissions: &adminPermission,
 		},
 		{
 			Name:        "rank",
 			Description: "ギルド内で詠んだ回数が多い人のランキングを表示します",
-		},
-		{
-			Name:        "delete",
-			Description: "自分の川柳を削除します",
-			Options: []*discordgo.ApplicationCommandOption{
-				{
-					Type:        discordgo.ApplicationCommandOptionUser,
-					Name:        "user",
-					Description: "削除対象のユーザー（管理者のみ）",
-					Required:    false,
-				},
-			},
 		},
 		{
 			Name:                     "channel",
@@ -157,7 +146,6 @@ var (
 		"unmute":    handleUnmuteCommand,
 		"rank":      handleRankCommand,
 		"channel":   commands.HandleChannelCommand,
-		"delete":    commands.HandleDeleteCommand,
 		"doctor":    commands.HandleDoctorCommand,
 		"detect":    commands.HandleDetectCommand,
 		"admin":     commands.HandleAdminCommand,
@@ -540,12 +528,6 @@ func handleComponentInteraction(s *discordgo.Session, i *discordgo.InteractionCr
 	customID := i.MessageComponentData().CustomID
 
 	switch {
-	case customID == commands.DeleteSelectCustomID:
-		commands.HandleDeleteSelectMenu(s, i)
-	case strings.HasPrefix(customID, commands.DeleteConfirmPrefix):
-		commands.HandleDeleteConfirm(s, i)
-	case customID == commands.DeleteCancelCustomID:
-		commands.HandleDeleteCancel(s, i)
 	case strings.HasPrefix(customID, commands.ContactReplyPrefix):
 		commands.HandleContactReplyButton(s, i)
 	case strings.HasPrefix(customID, commands.ChannelTogglePrefix):
@@ -596,7 +578,7 @@ func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 			if service.IsDetectionOptedOut(m.GuildID, m.Author.ID) {
 				return
 			}
-			if service.IsTimedOut(m.GuildID, m.Author.ID) {
+			if service.IsTimedOut(m.ChannelID, m.Author.ID) {
 				return
 			}
 			if containsDiscordTokens(m.Content) {
@@ -607,73 +589,28 @@ func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 			if spoiler {
 				content = stripSpoilerMarkers(content)
 			}
-			h := findHaikuSafe(content, []int{5, 7, 5})
-			if len(h) != 0 {
-				senryu := strings.Split(h[0], " ")
-				created, err := service.CreateSenryu(
-					model.Senryu{
-						ServerID:  m.GuildID,
-						AuthorID:  m.Author.ID,
-						Kamigo:    senryu[0],
-						Nakasichi: senryu[1],
-						Simogo:    senryu[2],
-						Spoiler:   &spoiler,
-					},
-				)
-				if err != nil {
-					logger.Error("Failed to create senryu", "error", err)
-					metrics.RecordError("database")
+			// 1. Check free-form haiku whitelist first
+			if match := matchJiyuritsu(content); match != nil {
+				handleJiyuritsuMatch(s, m, match, spoiler)
+				return
+			}
+
+			// 2. Try tanka detection (5-7-5-7-7) — longer pattern first
+			t := findHaikuSafe(content, []int{5, 7, 5, 7, 7})
+			if len(t) != 0 {
+				parts := strings.Split(t[0], " ")
+				if len(parts) == 5 {
+					handlePoemDetected(s, m, parts, model.PoemTypeTanka, spoiler)
 					return
 				}
+			}
 
-				replyText := fmt.Sprintf("川柳を検出しました！\n「%s」", h[0])
-				if spoiler {
-					replyText = fmt.Sprintf("川柳を検出しました！\n||「%s」||", h[0])
-				}
-
-				// Generate senryu image
-				msg := &discordgo.MessageSend{
-					Content:   replyText,
-					Reference: m.Reference(),
-				}
-
-				authorName := getDisplayName(s, m.GuildID, m.Author)
-				avatarURL := m.Author.AvatarURL("128")
-
-				// Load custom background
-				var bgData []byte
-				if bg, err := service.GetBackground(m.GuildID); err == nil && bg != nil {
-					if data, readErr := os.ReadFile(bg.FilePath); readErr == nil {
-						bgData = data
-					}
-				}
-
-				imgData, imgErr := senryuimg.RenderSenryu(senryuimg.RenderOptions{
-					Kamigo:     senryu[0],
-					Nakasichi:  senryu[1],
-					Simogo:     senryu[2],
-					AuthorName: authorName,
-					AvatarURL:  avatarURL,
-					Background: bgData,
-				})
-				if imgErr != nil {
-					logger.Warn("Failed to render senryu image, sending text only", "error", imgErr)
-				} else {
-					msg.Files = []*discordgo.File{{
-						Name:        "senryu.webp",
-						ContentType: "image/webp",
-						Reader:      bytes.NewReader(imgData),
-					}}
-				}
-
-				if _, err := s.ChannelMessageSendComplex(m.ChannelID, msg); err != nil {
-					logger.Warn("Failed to send senryu reply", "error", err, "channel_id", m.ChannelID)
-					// 返信に失敗した場合、保存した川柳を削除して整合性を保つ
-					if delErr := service.DeleteSenryu(int(created.ID), m.GuildID); delErr != nil {
-						logger.Error("Failed to rollback senryu after reply failure", "error", delErr, "senryu_id", created.ID)
-					} else {
-						logger.Info("Rolled back senryu after reply failure", "senryu_id", created.ID, "channel_id", m.ChannelID)
-					}
+			// 3. Try senryu detection (5-7-5)
+			h := findHaikuSafe(content, []int{5, 7, 5})
+			if len(h) != 0 {
+				parts := strings.Split(h[0], " ")
+				if len(parts) == 3 {
+					handlePoemDetected(s, m, parts, model.PoemTypeSenryu, spoiler)
 				}
 			}
 		}
@@ -682,8 +619,38 @@ func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 
 var medals = []string{"🥇", "🥈", "🥉", "🎖️", "🎖️"}
 
+// canMuteUnmute checks if the user has permission to mute/unmute.
+// Allowed: Discord administrators or bot owner_ids.
+func canMuteUnmute(s *discordgo.Session, i *discordgo.InteractionCreate) bool {
+	userID := i.Member.User.ID
+
+	// Bot owners always allowed
+	if permissions.IsOwner(userID) {
+		return true
+	}
+
+	// Check Discord administrator permission
+	perms := i.Member.Permissions
+	if perms&discordgo.PermissionAdministrator != 0 {
+		return true
+	}
+
+	return false
+}
+
 func handleMuteCommand(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	metrics.RecordCommandExecuted("mute")
+
+	if !canMuteUnmute(s, i) {
+		s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+			Type: discordgo.InteractionResponseChannelMessageWithSource,
+			Data: &discordgo.InteractionResponseData{
+				Content: "このコマンドは管理者のみ使用できます 🚫",
+				Flags:   discordgo.MessageFlagsEphemeral,
+			},
+		})
+		return
+	}
 
 	if err := service.ToMute(i.ChannelID, i.GuildID); err != nil {
 		logger.Error("Failed to mute channel", "error", err, "channel_id", i.ChannelID)
@@ -706,6 +673,17 @@ func handleMuteCommand(s *discordgo.Session, i *discordgo.InteractionCreate) {
 
 func handleUnmuteCommand(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	metrics.RecordCommandExecuted("unmute")
+
+	if !canMuteUnmute(s, i) {
+		s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+			Type: discordgo.InteractionResponseChannelMessageWithSource,
+			Data: &discordgo.InteractionResponseData{
+				Content: "このコマンドは管理者のみ使用できます 🚫",
+				Flags:   discordgo.MessageFlagsEphemeral,
+			},
+		})
+		return
+	}
 
 	if err := service.ToUnMute(i.ChannelID); err != nil {
 		logger.Error("Failed to unmute channel", "error", err, "channel_id", i.ChannelID)
@@ -817,25 +795,6 @@ func handleYomeYomuna(m *discordgo.MessageCreate, s *discordgo.Session) bool {
 			}
 		}
 		return true
-	case "詠むな":
-		senryu, err := service.GetLastSenryu(m.GuildID, m.Author.ID)
-		if err != nil {
-			if errors.Is(err, service.ErrSenryuNotFound) {
-				s.ChannelMessageSendReply(m.ChannelID, "まだ誰も詠んでいません。", m.Reference())
-			} else {
-				logger.Error("Failed to get last senryu", "error", err)
-				s.MessageReactionAdd(m.ChannelID, m.ID, "❌")
-			}
-		} else {
-			if _, err := s.ChannelMessageSendReply(
-				m.ChannelID,
-				senryu,
-				m.Reference(),
-			); err != nil {
-				logger.Warn("Failed to send reply", "error", err, "channel_id", m.ChannelID)
-			}
-		}
-		return true
 	}
 	return false
 }
@@ -893,6 +852,157 @@ func containsSpoiler(s string) bool {
 
 func stripSpoilerMarkers(s string) string {
 	return strings.ReplaceAll(s, "||", "")
+}
+
+// handlePoemDetected handles a detected senryu or tanka and sends a reply with image.
+func handlePoemDetected(s *discordgo.Session, m *discordgo.MessageCreate, parts []string, poemType string, spoiler bool) {
+	rec := model.Senryu{
+		ServerID:  m.GuildID,
+		AuthorID:  m.Author.ID,
+		Kamigo:    parts[0],
+		Nakasichi: parts[1],
+		Simogo:    parts[2],
+		Type:      poemType,
+		Spoiler:   &spoiler,
+	}
+	if poemType == model.PoemTypeTanka && len(parts) >= 5 {
+		rec.Shiku = parts[3]
+		rec.Goku = parts[4]
+	}
+
+	created, err := service.CreateSenryu(rec)
+	if err != nil {
+		logger.Error("Failed to create poem", "error", err, "type", poemType)
+		metrics.RecordError("database")
+		return
+	}
+
+	fullText := strings.Join(parts, " ")
+	typeName := "川柳"
+	if poemType == model.PoemTypeTanka {
+		typeName = "短歌"
+	}
+	replyText := fmt.Sprintf("%sを検出しました！\n「%s」", typeName, fullText)
+	if spoiler {
+		replyText = fmt.Sprintf("%sを検出しました！\n||「%s」||", typeName, fullText)
+	}
+
+	msg := &discordgo.MessageSend{
+		Content:   replyText,
+		Reference: m.Reference(),
+	}
+
+	authorName := getDisplayName(s, m.GuildID, m.Author)
+	avatarURL := m.Author.AvatarURL("128")
+
+	var bgData []byte
+	if bg, bgErr := service.GetBackground(m.GuildID); bgErr == nil && bg != nil {
+		if data, readErr := os.ReadFile(bg.FilePath); readErr == nil {
+			bgData = data
+		}
+	}
+
+	renderOpts := senryuimg.RenderOptions{
+		AuthorName: authorName,
+		AvatarURL:  avatarURL,
+		Background: bgData,
+	}
+	if len(parts) >= 1 {
+		renderOpts.Kamigo = parts[0]
+	}
+	if len(parts) >= 2 {
+		renderOpts.Nakasichi = parts[1]
+	}
+	if len(parts) >= 3 {
+		renderOpts.Simogo = parts[2]
+	}
+	if len(parts) >= 4 {
+		renderOpts.Shiku = parts[3]
+	}
+	if len(parts) >= 5 {
+		renderOpts.Goku = parts[4]
+	}
+
+	imgData, imgErr := senryuimg.RenderSenryu(renderOpts)
+	if imgErr != nil {
+		logger.Warn("Failed to render poem image, sending text only", "error", imgErr)
+	} else {
+		msg.Files = []*discordgo.File{{
+			Name:        poemType + ".webp",
+			ContentType: "image/webp",
+			Reader:      bytes.NewReader(imgData),
+		}}
+	}
+
+	if _, err := s.ChannelMessageSendComplex(m.ChannelID, msg); err != nil {
+		logger.Warn("Failed to send poem reply", "error", err, "channel_id", m.ChannelID)
+		if delErr := service.DeleteSenryu(int(created.ID), m.GuildID); delErr != nil {
+			logger.Error("Failed to rollback poem after reply failure", "error", delErr, "senryu_id", created.ID)
+		} else {
+			logger.Info("Rolled back poem after reply failure", "senryu_id", created.ID, "channel_id", m.ChannelID)
+		}
+	}
+}
+
+// handleJiyuritsuMatch handles a free-form haiku whitelist match.
+func handleJiyuritsuMatch(s *discordgo.Session, m *discordgo.MessageCreate, match *jiyuritsuEntry, spoiler bool) {
+	rec := model.Senryu{
+		ServerID:  m.GuildID,
+		AuthorID:  m.Author.ID,
+		Kamigo:    match.Text,
+		Type:      model.PoemTypeJiyuritsu,
+		Spoiler:   &spoiler,
+	}
+
+	created, err := service.CreateSenryu(rec)
+	if err != nil {
+		logger.Error("Failed to create jiyuritsu record", "error", err)
+		metrics.RecordError("database")
+		return
+	}
+
+	replyText := fmt.Sprintf("自由律俳句を検出しました！\n「%s」\n— %s", match.Text, match.Author)
+	if spoiler {
+		replyText = fmt.Sprintf("自由律俳句を検出しました！\n||「%s」||\n— %s", match.Text, match.Author)
+	}
+
+	msg := &discordgo.MessageSend{
+		Content:   replyText,
+		Reference: m.Reference(),
+	}
+
+	authorName := getDisplayName(s, m.GuildID, m.Author)
+	avatarURL := m.Author.AvatarURL("128")
+
+	var bgData []byte
+	if bg, bgErr := service.GetBackground(m.GuildID); bgErr == nil && bg != nil {
+		if data, readErr := os.ReadFile(bg.FilePath); readErr == nil {
+			bgData = data
+		}
+	}
+
+	imgData, imgErr := senryuimg.RenderSenryu(senryuimg.RenderOptions{
+		Kamigo:     match.Text,
+		AuthorName: authorName,
+		AvatarURL:  avatarURL,
+		Background: bgData,
+	})
+	if imgErr != nil {
+		logger.Warn("Failed to render jiyuritsu image, sending text only", "error", imgErr)
+	} else {
+		msg.Files = []*discordgo.File{{
+			Name:        "jiyuritsu.webp",
+			ContentType: "image/webp",
+			Reader:      bytes.NewReader(imgData),
+		}}
+	}
+
+	if _, sendErr := s.ChannelMessageSendComplex(m.ChannelID, msg); sendErr != nil {
+		logger.Warn("Failed to send jiyuritsu reply", "error", sendErr, "channel_id", m.ChannelID)
+		if delErr := service.DeleteSenryu(int(created.ID), m.GuildID); delErr != nil {
+			logger.Error("Failed to rollback jiyuritsu after reply failure", "error", delErr, "senryu_id", created.ID)
+		}
+	}
 }
 
 // getDisplayName returns the best display name for a user in a guild.

@@ -33,6 +33,8 @@ type RenderOptions struct {
 	Kamigo     string // upper phrase (5 mora)
 	Nakasichi  string // middle phrase (7 mora)
 	Simogo     string // lower phrase (5 mora)
+	Shiku      string // 4th phrase (7 mora, tanka only)
+	Goku       string // 5th phrase (7 mora, tanka only)
 	AuthorName string // display name
 	AvatarURL  string // Discord avatar URL
 	Background []byte // custom background image (nil = white)
@@ -117,13 +119,37 @@ func RenderSenryu(opts RenderOptions) ([]byte, error) {
 	// Text color
 	textColor := color.RGBA{R: 30, G: 30, B: 30, A: 255}
 
-	// Calculate column positions (right to left: kamigo, nakasichi, simogo)
-	// Vertical text: each character is drawn top-to-bottom, columns flow right-to-left
+	// Build phrase list dynamically (supports senryu, tanka, and single-line jiyuritsu)
+	var phrases []string
+	if opts.Kamigo != "" {
+		phrases = append(phrases, opts.Kamigo)
+	}
+	if opts.Nakasichi != "" {
+		phrases = append(phrases, opts.Nakasichi)
+	}
+	if opts.Simogo != "" {
+		phrases = append(phrases, opts.Simogo)
+	}
+	if opts.Shiku != "" {
+		phrases = append(phrases, opts.Shiku)
+	}
+	if opts.Goku != "" {
+		phrases = append(phrases, opts.Goku)
+	}
+
+	// Adjust column spacing based on number of phrases
+	numCols := len(phrases)
 	colSpacing := 120.0
+	if numCols >= 5 {
+		colSpacing = 100.0 // tighter for tanka
+	} else if numCols == 1 {
+		colSpacing = 0 // single column for jiyuritsu
+	}
+
+	// Calculate column positions (right to left)
+	// Vertical text: each character is drawn top-to-bottom, columns flow right-to-left
 	startX := float64(imgWidth) - padding - mainFontSize/2
 	startY := float64(padding) + 40
-
-	phrases := []string{opts.Kamigo, opts.Nakasichi, opts.Simogo}
 
 	// Find the longest phrase for vertical centering
 	maxChars := 0
@@ -151,9 +177,9 @@ func RenderSenryu(opts RenderOptions) ([]byte, error) {
 		}
 	}
 
-	// Draw author name (smaller, vertical, to the left of simogo column)
+	// Draw author name (smaller, vertical, to the left of the last phrase column)
 	if opts.AuthorName != "" {
-		authorX := startX - 3*colSpacing + 20
+		authorX := startX - float64(numCols)*colSpacing + 20
 		authorChars := []rune(opts.AuthorName)
 		authorCharHeight := authorFontSize * 1.15
 
