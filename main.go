@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"os"
@@ -22,6 +23,8 @@ import (
 	"github.com/u16-io/FindSenryu4Discord/pkg/logger"
 	"github.com/u16-io/FindSenryu4Discord/pkg/metrics"
 	"github.com/u16-io/FindSenryu4Discord/pkg/permissions"
+	"github.com/u16-io/FindSenryu4Discord/pkg/senryuimg"
+	"github.com/u16-io/FindSenryu4Discord/pkg/webgui"
 	"github.com/u16-io/FindSenryu4Discord/service"
 
 	"github.com/ikawaha/kagome-dict/uni"
@@ -40,6 +43,9 @@ var (
 
 	// adminPermission is used for DefaultMemberPermissions on admin-only commands.
 	adminPermission int64 = discordgo.PermissionAdministrator
+
+	minTimeoutMinutes float64 = 1
+	maxTimeoutMinutes float64 = 1440
 
 	userCommands = []*discordgo.ApplicationCommand{
 		{
@@ -96,18 +102,69 @@ var (
 				},
 			},
 		},
+		{
+			Name:        "blacklist",
+			Description: "自分の川柳検出をトグルします（ブラックリスト）",
+		},
+		{
+			Name:        "timeout",
+			Description: "指定した分数だけ川柳検出を一時停止します",
+			Options: []*discordgo.ApplicationCommandOption{
+				{
+					Type:        discordgo.ApplicationCommandOptionInteger,
+					Name:        "minutes",
+					Description: "一時停止する分数（1〜1440）",
+					Required:    false,
+					MinValue:    &minTimeoutMinutes,
+					MaxValue:    maxTimeoutMinutes,
+				},
+			},
+		},
+		{
+			Name:        "compose",
+			Description: "上の句・中の句・下の句を指定して川柳を作成します",
+			Options: []*discordgo.ApplicationCommandOption{
+				{
+					Type:        discordgo.ApplicationCommandOptionString,
+					Name:        "kamigo",
+					Description: "上の句",
+					Required:    true,
+				},
+				{
+					Type:        discordgo.ApplicationCommandOptionString,
+					Name:        "nakasichi",
+					Description: "中の句",
+					Required:    true,
+				},
+				{
+					Type:        discordgo.ApplicationCommandOptionString,
+					Name:        "simogo",
+					Description: "下の句",
+					Required:    true,
+				},
+				{
+					Type:        discordgo.ApplicationCommandOptionUser,
+					Name:        "user",
+					Description: "詠み手として指定するユーザー（省略時は自分）",
+					Required:    false,
+				},
+			},
+		},
 	}
 
 	commandHandlers = map[string]func(s *discordgo.Session, i *discordgo.InteractionCreate){
-		"mute":    handleMuteCommand,
-		"unmute":  handleUnmuteCommand,
-		"rank":    handleRankCommand,
-		"channel": commands.HandleChannelCommand,
-		"delete":  commands.HandleDeleteCommand,
-		"doctor":  commands.HandleDoctorCommand,
-		"detect":  commands.HandleDetectCommand,
-		"admin":   commands.HandleAdminCommand,
-		"contact": commands.HandleContactCommand,
+		"mute":      handleMuteCommand,
+		"unmute":    handleUnmuteCommand,
+		"rank":      handleRankCommand,
+		"channel":   commands.HandleChannelCommand,
+		"delete":    commands.HandleDeleteCommand,
+		"doctor":    commands.HandleDoctorCommand,
+		"detect":    commands.HandleDetectCommand,
+		"admin":     commands.HandleAdminCommand,
+		"contact":   commands.HandleContactCommand,
+		"blacklist": commands.HandleBlacklistCommand,
+		"timeout":   commands.HandleTimeoutCommand,
+		"compose":   commands.HandleComposeCommand,
 	}
 )
 
@@ -141,10 +198,19 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Set font path for senryu image generation
+	senryuimg.SetFontPath(conf.Web.FontPath)
+
 	// Start health check server
 	healthServer, err := health.StartServer()
 	if err != nil {
 		logger.Error("Failed to start health server", "error", err)
+	}
+
+	// Start WebGUI server
+	webServer, err := webgui.StartServer()
+	if err != nil {
+		logger.Error("Failed to start WebGUI server", "error", err)
 	}
 
 	// Initialize backup manager
@@ -267,6 +333,15 @@ func main() {
 		adminNotifier.Start()
 		adminNotifier.NotifyStarted()
 	}
+	// Start periodic timeout cleanup (every 10 minutes)
+	go func() {
+		ticker := time.NewTicker(10 * time.Minute)
+		defer ticker.Stop()
+		for range ticker.C {
+			service.CleanupExpiredTimeouts()
+		}
+	}()
+
 	botReady.Store(true)
 
 	// Mark as ready
@@ -302,6 +377,13 @@ func main() {
 	// Stop backup manager
 	if backupManager != nil {
 		backupManager.Stop(ctx)
+	}
+
+	// Stop WebGUI server
+	if webServer != nil {
+		if err := webServer.Stop(ctx); err != nil {
+			logger.Error("Failed to stop WebGUI server", "error", err)
+		}
 	}
 
 	// Stop health server
@@ -514,6 +596,9 @@ func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 			if service.IsDetectionOptedOut(m.GuildID, m.Author.ID) {
 				return
 			}
+			if service.IsTimedOut(m.GuildID, m.Author.ID) {
+				return
+			}
 			if containsDiscordTokens(m.Content) {
 				return
 			}
@@ -540,15 +625,48 @@ func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 					metrics.RecordError("database")
 					return
 				}
+
 				replyText := fmt.Sprintf("川柳を検出しました！\n「%s」", h[0])
 				if spoiler {
 					replyText = fmt.Sprintf("川柳を検出しました！\n||「%s」||", h[0])
 				}
-				if _, err := s.ChannelMessageSendReply(
-					m.ChannelID,
-					replyText,
-					m.Reference(),
-				); err != nil {
+
+				// Generate senryu image
+				msg := &discordgo.MessageSend{
+					Content:   replyText,
+					Reference: m.Reference(),
+				}
+
+				authorName := getDisplayName(s, m.GuildID, m.Author)
+				avatarURL := m.Author.AvatarURL("128")
+
+				// Load custom background
+				var bgData []byte
+				if bg, err := service.GetBackground(m.GuildID); err == nil && bg != nil {
+					if data, readErr := os.ReadFile(bg.FilePath); readErr == nil {
+						bgData = data
+					}
+				}
+
+				imgData, imgErr := senryuimg.RenderSenryu(senryuimg.RenderOptions{
+					Kamigo:     senryu[0],
+					Nakasichi:  senryu[1],
+					Simogo:     senryu[2],
+					AuthorName: authorName,
+					AvatarURL:  avatarURL,
+					Background: bgData,
+				})
+				if imgErr != nil {
+					logger.Warn("Failed to render senryu image, sending text only", "error", imgErr)
+				} else {
+					msg.Files = []*discordgo.File{{
+						Name:        "senryu.webp",
+						ContentType: "image/webp",
+						Reader:      bytes.NewReader(imgData),
+					}}
+				}
+
+				if _, err := s.ChannelMessageSendComplex(m.ChannelID, msg); err != nil {
 					logger.Warn("Failed to send senryu reply", "error", err, "channel_id", m.ChannelID)
 					// 返信に失敗した場合、保存した川柳を削除して整合性を保つ
 					if delErr := service.DeleteSenryu(int(created.ID), m.GuildID); delErr != nil {
@@ -775,6 +893,19 @@ func containsSpoiler(s string) bool {
 
 func stripSpoilerMarkers(s string) string {
 	return strings.ReplaceAll(s, "||", "")
+}
+
+// getDisplayName returns the best display name for a user in a guild.
+// Priority: server nickname > global display name > username
+func getDisplayName(s *discordgo.Session, guildID string, user *discordgo.User) string {
+	member, err := s.GuildMember(guildID, user.ID)
+	if err == nil && member.Nick != "" {
+		return member.Nick
+	}
+	if user.GlobalName != "" {
+		return user.GlobalName
+	}
+	return user.Username
 }
 
 func getWriters(senryus []model.Senryu, guildID string, session *discordgo.Session) []string {

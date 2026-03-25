@@ -5,7 +5,9 @@ go 1.24.0
 require (
 	github.com/0x307e/go-haiku v0.0.0-20260322130653-5657c5fab170
 	github.com/bwmarrin/discordgo v0.29.0
+	github.com/chai2010/webp v1.1.1
 	github.com/cockroachdb/errors v1.11.3
+	github.com/fogleman/gg v1.3.0
 	github.com/ikawaha/kagome-dict/uni v1.1.9
 	github.com/jinzhu/gorm v1.9.16
 	github.com/knadh/koanf/parsers/toml v0.1.0
@@ -15,6 +17,7 @@ require (
 	github.com/lib/pq v1.10.9
 	github.com/mattn/go-sqlite3 v1.14.33
 	github.com/prometheus/client_golang v1.20.5
+	golang.org/x/image v0.23.0
 )
 
 require (
@@ -43,6 +46,7 @@ require (
 	github.com/prometheus/common v0.55.0 // indirect
 	github.com/prometheus/procfs v0.15.1 // indirect
 	github.com/rogpeppe/go-internal v1.10.0 // indirect
+	github.com/golang/freetype v0.0.0-20170609003504-e2365dfdc4a0 // indirect
 	golang.org/x/crypto v0.46.0 // indirect
 	golang.org/x/sys v0.39.0 // indirect
 	golang.org/x/text v0.32.0 // indirect

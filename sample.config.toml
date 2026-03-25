@@ -27,3 +27,8 @@ enabled = false
 interval_hour = 24
 path = "data/backups"
 max_backups = 7
+
+[web]
+enabled = true
+port = 8080
+font_path = "data/fonts/kouzan.ttf"

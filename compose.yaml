@@ -3,7 +3,7 @@ services:
     image: busybox:latest
     volumes:
       - "./data:/app/data"
-    command: ["sh", "-c", "mkdir -p /app/data/backups && chown -R 65532:65532 /app/data"]
+    command: ["sh", "-c", "mkdir -p /app/data/backups /app/data/fonts /app/data/backgrounds && chown -R 65532:65532 /app/data"]
   app:
     build: .
     restart: always
@@ -12,6 +12,7 @@ services:
         condition: service_completed_successfully
     ports:
       - "9090:9090"
+      - "8080:8080"
     volumes:
       - "./data:/app/data"
       - "./config.toml:/app/config.toml:ro"
@@ -25,3 +26,12 @@ services:
     # healthcheck disabled — distroless has no shell/curl
     # Use Docker restart policy for recovery
     stop_grace_period: 30s
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    restart: always
+    command: tunnel run
+    environment:
+      TUNNEL_TOKEN: ${CLOUDFLARED_TUNNEL_TOKEN}
+    depends_on:
+      app:
+        condition: service_started

@@ -33,3 +33,10 @@ type DetectionOptOut struct {
 	ServerID string `gorm:"primaryKey"`
 	UserID   string `gorm:"primaryKey"`
 }
+
+// BackgroundImage stores custom background image metadata per guild.
+type BackgroundImage struct {
+	GuildID   string    `gorm:"primaryKey;column:guild_id"`
+	FilePath  string    `gorm:"column:file_path"`
+	UpdatedAt time.Time `gorm:"column:updated_at"`
+}

@@ -26,6 +26,7 @@ type Config struct {
 	Admin    AdminConfig    `koanf:"admin"`
 	Server   ServerConfig   `koanf:"server"`
 	Backup   BackupConfig   `koanf:"backup"`
+	Web      WebConfig      `koanf:"web"`
 }
 
 // DiscordConfig holds Discord-related configuration
@@ -68,6 +69,13 @@ type BackupConfig struct {
 	IntervalHour int    `koanf:"interval_hour"` // Backup interval in hours
 	Path         string `koanf:"path"`          // Backup directory path
 	MaxBackups   int    `koanf:"max_backups"`   // Maximum number of backups to keep
+}
+
+// WebConfig holds WebGUI configuration
+type WebConfig struct {
+	Enabled  bool   `koanf:"enabled"`   // Enable WebGUI server
+	Port     int    `koanf:"port"`      // WebGUI server port
+	FontPath string `koanf:"font_path"` // Path to Japanese brush font file
 }
 
 // Load loads configuration from file and environment variables
@@ -134,6 +142,12 @@ func setDefaults(c *Config) {
 	}
 	if c.Backup.MaxBackups == 0 {
 		c.Backup.MaxBackups = 7
+	}
+	if c.Web.Port == 0 {
+		c.Web.Port = 8080
+	}
+	if c.Web.FontPath == "" {
+		c.Web.FontPath = "data/fonts/kouzan.ttf"
 	}
 }
 
