@@ -8,11 +8,76 @@ Debian 13 上で Docker Compose を使ってデプロイする手順です。
 
 - Debian 13 (Trixie) のクリーンインストール
 - root または sudo 権限
-- Discord Bot トークン（[Discord Developer Portal](https://discord.com/developers/applications) で取得）
+- Discord アカウント
 
 ---
 
-## 2. Docker のインストール
+## 2. Discord Bot の作成
+
+### 2.1 アプリケーションの作成
+
+1. [Discord Developer Portal](https://discord.com/developers/applications) にログイン
+2. 右上の **「New Application」** をクリック
+3. アプリケーション名を入力（例: `FindSenryu`）し、**「Create」**
+
+### 2.2 Bot の設定
+
+1. 左メニューから **「Bot」** を選択
+2. **「Reset Token」** をクリックしてトークンをコピー（後で `config.toml` に使用）
+
+> トークンは一度しか表示されません。紛失した場合は再生成が必要です。
+
+3. **Privileged Gateway Intents** で以下を **すべて有効** にする:
+
+| Intent | 必須 | 理由 |
+|--------|------|------|
+| **PRESENCE INTENT** | 任意 | メンバーのオンライン状態（使用しないが将来の拡張用） |
+| **SERVER MEMBERS INTENT** | 必須 | ニックネーム取得・ランキング表示・ハンコ画像生成に必要 |
+| **MESSAGE CONTENT INTENT** | 必須 | メッセージ本文を読み取って川柳を検出するために必須 |
+
+> **MESSAGE CONTENT INTENT** が無効だとメッセージ本文が空になり、川柳が一切検出されません。
+
+### 2.3 OAuth2 招待 URL の生成
+
+1. 左メニューから **「OAuth2」** を選択
+2. **OAuth2 URL Generator** で以下を設定:
+
+**Scopes（スコープ）:**
+- `bot`
+- `applications.commands`
+
+**Bot Permissions（Bot権限）:**
+
+| 権限 | 値 | 理由 |
+|------|-----|------|
+| Send Messages | `0x0000000000000800` | 検出結果のリプライ送信 |
+| Send Messages in Threads | `0x0000040000000000` | スレッド内でのリプライ |
+| Embed Links | `0x0000000000004000` | ランキング等のEmbed表示 |
+| Attach Files | `0x0000000000008000` | 川柳画像(webp)の添付 |
+| Read Message History | `0x0000000000010000` | メッセージの参照（リプライ用） |
+| Add Reactions | `0x0000000000000040` | エラー時のリアクション |
+| Use Slash Commands | `0x0000000080000000` | スラッシュコマンドの使用 |
+
+**推奨 permissions 整数値: `379968`**
+
+3. 生成された URL をブラウザで開き、Bot を追加したいサーバーを選択して **「認証」**
+
+### 2.4 管理者向け追加設定（任意）
+
+管理コマンド（`/admin stats` など）を使う場合:
+
+1. Discord で管理用サーバー（ギルド）を作成または決定
+2. サーバー設定 → ウィジェット → **サーバーID** をコピー
+3. `config.toml` の `admin.guild_id` に設定
+4. 自分の Discord ユーザーIDを `admin.owner_ids` に追加
+
+**ユーザーIDの取得方法:**
+1. Discord の設定 → 詳細設定 → **開発者モード** を有効化
+2. 自分のアイコンを右クリック → **「IDをコピー」**
+
+---
+
+## 3. Docker のインストール
 
 ```bash
 # パッケージの更新
@@ -43,7 +108,7 @@ sudo usermod -aG docker $USER
 
 ---
 
-## 3. プロジェクトの取得
+## 4. プロジェクトの取得
 
 ```bash
 cd /opt
@@ -54,7 +119,7 @@ cd FindSenryu4Discord
 
 ---
 
-## 4. フォントのインストール
+## 5. フォントのインストール
 
 川柳画像の生成に日本語毛筆フォントが必要です。
 
@@ -73,7 +138,7 @@ mkdir -p data/fonts
 
 ---
 
-## 5. 設定ファイルの作成
+## 6. 設定ファイルの作成
 
 ```bash
 cp sample.config.toml config.toml
@@ -125,7 +190,7 @@ font_path = "data/fonts/kouzan.ttf"
 
 ---
 
-## 6. 環境変数の設定
+## 7. 環境変数の設定
 
 Cloudflare Tunnel を使う場合（WebGUI を外部公開する場合）:
 
@@ -141,7 +206,7 @@ Cloudflare Tunnel を使わない場合は `.env` を作成しなくても動作
 
 ---
 
-## 7. ファイアウォールの設定
+## 8. ファイアウォールの設定
 
 ```bash
 # ufw がインストールされている場合
@@ -156,7 +221,7 @@ sudo ufw enable
 
 ---
 
-## 8. ビルドと起動
+## 9. ビルドと起動
 
 ```bash
 # ビルド＆起動
@@ -177,14 +242,16 @@ curl http://localhost:9090/health
 
 ---
 
-## 9. 動作確認
+## 10. 動作確認
 
 ### Discord Bot
 
-1. [Discord Developer Portal](https://discord.com/developers/applications) で Bot を作成
-2. `MESSAGE CONTENT INTENT` を有効にする（Bot → Privileged Gateway Intents）
-3. Bot をサーバーに招待（OAuth2 → URL Generator → bot スコープ、権限: `Send Messages`, `Read Message History`, `Attach Files`）
-4. サーバーでメッセージを送信し、5-7-5 の音節パターンが検出されることを確認
+[2. Discord Bot の作成](#2-discord-bot-の作成) の手順が完了していることを確認し、以下をテストします:
+
+1. Bot がサーバーにオンライン表示されている
+2. 5-7-5 の音節パターンを含むメッセージを送信し、Bot が川柳を検出してリプライすること
+3. リプライに webp 画像が添付されていること（フォントが配置されている場合）
+4. `/doctor` コマンドを実行し、全項目が正常と表示されること
 
 ### WebGUI
 
@@ -201,7 +268,7 @@ curl http://localhost:9090/metrics   # Prometheus メトリクス
 
 ---
 
-## 10. 運用
+## 11. 運用
 
 ### ログの確認
 
@@ -241,7 +308,7 @@ docker compose down
 
 ---
 
-## 11. Cloudflare Tunnel のセットアップ（任意）
+## 12. Cloudflare Tunnel のセットアップ（任意）
 
 WebGUI を外部に安全に公開する場合:
 
@@ -255,7 +322,7 @@ WebGUI を外部に安全に公開する場合:
 
 ---
 
-## 12. systemd による自動起動（任意）
+## 13. systemd による自動起動（任意）
 
 Docker Compose をシステム起動時に自動的に立ち上げる場合:
 
