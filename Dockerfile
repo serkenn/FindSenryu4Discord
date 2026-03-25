@@ -12,7 +12,7 @@ COPY go.mod go.sum ./
 RUN go mod download || true
 
 COPY . .
-RUN go mod tidy && CGO_ENABLED=1 go build -trimpath -ldflags="-s -w" -o bot main.go
+RUN go mod tidy && CGO_ENABLED=1 go build -trimpath -ldflags="-s -w" -o bot .
 
 # Runtime stage
 FROM gcr.io/distroless/base-debian12:nonroot
