@@ -8,9 +8,10 @@ import (
 	"os/signal"
 	"regexp"
 	"strings"
-	"unicode"
+	"sync"
 	"sync/atomic"
 	"syscall"
+	"unicode"
 	"time"
 
 	"github.com/u16-io/FindSenryu4Discord/commands"
@@ -43,6 +44,14 @@ var (
 
 	minTimeoutMinutes float64 = 1
 	maxTimeoutMinutes float64 = 1440
+
+	// lastDetectedUser tracks the most recently detected poem author per channel.
+	// key = channelID, value = {userID, time}
+	lastDetectedMu   sync.RWMutex
+	lastDetectedUser = make(map[string]detectedInfo)
+
+	// OptOutPromptPrefix is the custom ID prefix for opt-out prompt buttons.
+	OptOutPromptPrefix = "optout_prompt_"
 
 	userCommands = []*discordgo.ApplicationCommand{
 		{
@@ -577,6 +586,8 @@ func handleComponentInteraction(s *discordgo.Session, i *discordgo.InteractionCr
 		commands.HandleContactReplyButton(s, i)
 	case strings.HasPrefix(customID, commands.ChannelTogglePrefix):
 		commands.HandleChannelToggle(s, i)
+	case strings.HasPrefix(customID, OptOutPromptPrefix):
+		handleOptOutPromptButton(s, i, customID)
 	}
 }
 
@@ -614,6 +625,11 @@ func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 		return
 	}
 
+	// Check if a recently-detected user is sending abusive follow-up
+	if checkPostDetectionAbuse(s, m) {
+		return
+	}
+
 	if handleYomeYomuna(m, s) {
 		return
 	}
@@ -646,9 +662,27 @@ func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 			// Strip spaces/punctuation for length check
 			contentRunes := []rune(strings.ReplaceAll(strings.ReplaceAll(normalizedContent, " ", ""), "　", ""))
 
+			// --- False-positive prevention filters ---
+			detConf := config.GetConf().Detection
+
+			// a) Check Japanese character ratio
+			if japaneseRatio(normalizedContent) < detConf.MinJapaneseRatio {
+				return
+			}
+
+			// b) Check for mid-text sentence punctuation (会話文フィルタ)
+			if hasMiddleSentencePunctuation(normalizedContent) {
+				return
+			}
+
+			// c) Check for known false-positive phrases
+			if isFalsePositivePhrase(normalizedContent) {
+				return
+			}
+
 			// 2. Try tanka detection (5-7-5-7-7) — longer pattern first
 			// Max ~50 chars to prevent false positives from long messages
-			if len(contentRunes) <= 80 {
+			if len(contentRunes) >= detConf.MinTankaRunes && len(contentRunes) <= 80 {
 				t := findHaikuSafe(normalizedContent, []int{5, 7, 5, 7, 7})
 				if len(t) != 0 {
 					parts := strings.Split(t[0], " ")
@@ -670,20 +704,32 @@ func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 				return
 			}
 
-			// 4. Try senryu detection (5-7-5)
-			// Max ~30 chars to prevent false positives from long messages
-			if len(contentRunes) <= 50 {
+			// 4. Try senryu/haiku detection (5-7-5)
+			// Min/max char limits to prevent false positives
+			if len(contentRunes) >= detConf.MinSenryuRunes && len(contentRunes) <= 50 {
+				var detected []string
 				h := findHaikuSafe(normalizedContent, []int{5, 7, 5})
 				if len(h) != 0 {
 					parts := strings.Split(h[0], " ")
 					if len(parts) == 3 {
-						handlePoemDetected(s, m, parts, model.PoemTypeSenryu, spoiler)
-						return
+						detected = parts
 					}
 				}
-				// Fallback: try kagome-based mora counting for senryu
-				if fbParts := fallbackHaikuDetect(normalizedContent, []int{5, 7, 5}); len(fbParts) == 3 {
-					handlePoemDetected(s, m, fbParts, model.PoemTypeSenryu, spoiler)
+				if detected == nil {
+					// Fallback: try kagome-based mora counting
+					if fbParts := fallbackHaikuDetect(normalizedContent, []int{5, 7, 5}); len(fbParts) == 3 {
+						detected = fbParts
+					}
+				}
+				if detected != nil {
+					// Check for kigo to distinguish haiku vs senryu
+					fullText := strings.Join(detected, "")
+					kigoResult := detectKigo(fullText)
+					if kigoResult != nil {
+						handleHaikuDetected(s, m, detected, kigoResult, spoiler)
+					} else {
+						handlePoemDetected(s, m, detected, model.PoemTypeSenryu, spoiler)
+					}
 				}
 			}
 		}
@@ -889,37 +935,64 @@ var abusiveWords = []string{
 	"きもい", "キモい", "きめえ", "キメえ",
 	"ゴミ", "ごみ", "カス", "かす",
 	"クソ", "くそ", "糞",
-	"黙れ", "だまれ",
+	"黙れ", "だまれ", "黙って",
 	"殺す", "ころす",
+	"失せろ", "うせろ",
+	"氏ね", "タヒね",
 }
 
-// handleAbusiveReply detects abusive replies to the bot's messages and auto-blacklists the user.
-// Returns true if an abusive reply was handled.
-func handleAbusiveReply(s *discordgo.Session, m *discordgo.MessageCreate) bool {
-	// Only check replies
-	if m.MessageReference == nil || m.MessageReference.MessageID == "" {
-		return false
-	}
-
-	// Check if the replied message is from our bot
-	refMsg, err := s.ChannelMessage(m.ChannelID, m.MessageReference.MessageID)
-	if err != nil {
-		return false
-	}
-	if refMsg.Author == nil || refMsg.Author.ID != s.State.User.ID {
-		return false
-	}
-
-	// Check if the reply contains abusive words
-	contentLower := strings.ToLower(m.Content)
-	abusive := false
+// containsAbusiveWord checks if the text contains any abusive word.
+func containsAbusiveWord(text string) bool {
+	lower := strings.ToLower(text)
 	for _, word := range abusiveWords {
-		if strings.Contains(contentLower, strings.ToLower(word)) {
-			abusive = true
-			break
+		if strings.Contains(lower, strings.ToLower(word)) {
+			return true
 		}
 	}
-	if !abusive {
+	return false
+}
+
+// isBotMention checks if the message mentions the bot by name or by @mention.
+func isBotMention(s *discordgo.Session, content string) bool {
+	botUser := s.State.User
+	if botUser == nil {
+		return false
+	}
+	// Check for @mention
+	if strings.Contains(content, "<@"+botUser.ID+">") || strings.Contains(content, "<@!"+botUser.ID+">") {
+		return true
+	}
+	// Check for bot username/display name in text
+	lower := strings.ToLower(content)
+	if botUser.Username != "" && strings.Contains(lower, strings.ToLower(botUser.Username)) {
+		return true
+	}
+	if botUser.GlobalName != "" && strings.Contains(lower, strings.ToLower(botUser.GlobalName)) {
+		return true
+	}
+	return false
+}
+
+// handleAbusiveReply detects abusive replies/messages directed at the bot and auto-blacklists the user.
+// Triggers on: (1) replies to bot messages containing abuse, or (2) messages mentioning the bot by name with abuse.
+// Returns true if an abusive message was handled.
+func handleAbusiveReply(s *discordgo.Session, m *discordgo.MessageCreate) bool {
+	isReplyToBot := false
+	if m.MessageReference != nil && m.MessageReference.MessageID != "" {
+		refMsg, err := s.ChannelMessage(m.ChannelID, m.MessageReference.MessageID)
+		if err == nil && refMsg.Author != nil && refMsg.Author.ID == s.State.User.ID {
+			isReplyToBot = true
+		}
+	}
+
+	mentionsBot := isBotMention(s, m.Content)
+
+	// Only check if the message is directed at the bot
+	if !isReplyToBot && !mentionsBot {
+		return false
+	}
+
+	if !containsAbusiveWord(m.Content) {
 		return false
 	}
 
@@ -947,6 +1020,142 @@ func handleAbusiveReply(s *discordgo.Session, m *discordgo.MessageCreate) bool {
 	}
 
 	return true
+}
+
+// detectedInfo holds info about the last user whose poem was detected in a channel.
+type detectedInfo struct {
+	userID string
+	at     time.Time
+}
+
+// recordDetectedUser records that a user's poem was detected in a channel.
+func recordDetectedUser(channelID, userID string) {
+	lastDetectedMu.Lock()
+	defer lastDetectedMu.Unlock()
+	lastDetectedUser[channelID] = detectedInfo{userID: userID, at: time.Now()}
+}
+
+// checkPostDetectionAbuse checks if the message author was just detected and
+// their follow-up message contains abusive language. If so, sends an ephemeral-style
+// opt-out prompt visible only to the user.
+// Returns true if a prompt was sent (caller should stop processing).
+func checkPostDetectionAbuse(s *discordgo.Session, m *discordgo.MessageCreate) bool {
+	lastDetectedMu.RLock()
+	info, ok := lastDetectedUser[m.ChannelID]
+	lastDetectedMu.RUnlock()
+
+	if !ok || info.userID != m.Author.ID {
+		return false
+	}
+	// Only within 2 minutes of detection
+	if time.Since(info.at) > 2*time.Minute {
+		return false
+	}
+
+	if !containsAbusiveWord(m.Content) {
+		return false
+	}
+
+	// Clear the tracking so we don't prompt again
+	lastDetectedMu.Lock()
+	delete(lastDetectedUser, m.ChannelID)
+	lastDetectedMu.Unlock()
+
+	// Send opt-out prompt with button (auto-delete after 30s)
+	msg, err := s.ChannelMessageSendComplex(m.ChannelID, &discordgo.MessageSend{
+		Content: fmt.Sprintf("<@%s> あなたの発言を川柳として切り抜かないように設定しますか？", m.Author.ID),
+		Components: []discordgo.MessageComponent{
+			discordgo.ActionsRow{
+				Components: []discordgo.MessageComponent{
+					discordgo.Button{
+						Label:    "はい、オフにする",
+						Style:    discordgo.DangerButton,
+						CustomID: OptOutPromptPrefix + "yes_" + m.Author.ID,
+					},
+					discordgo.Button{
+						Label:    "いいえ、そのまま",
+						Style:    discordgo.SecondaryButton,
+						CustomID: OptOutPromptPrefix + "no_" + m.Author.ID,
+					},
+				},
+			},
+		},
+	})
+	if err != nil {
+		logger.Warn("Failed to send opt-out prompt", "error", err)
+		return false
+	}
+
+	// Auto-delete after 30 seconds
+	time.AfterFunc(30*time.Second, func() {
+		_ = s.ChannelMessageDelete(m.ChannelID, msg.ID)
+	})
+
+	return true
+}
+
+// handleOptOutPromptButton handles the opt-out prompt button interaction.
+func handleOptOutPromptButton(s *discordgo.Session, i *discordgo.InteractionCreate, customID string) {
+	// Extract action and target user ID: "optout_prompt_yes_123456" or "optout_prompt_no_123456"
+	rest := strings.TrimPrefix(customID, OptOutPromptPrefix)
+	parts := strings.SplitN(rest, "_", 2)
+	if len(parts) != 2 {
+		return
+	}
+	action, targetUserID := parts[0], parts[1]
+
+	// Only the target user can click the button
+	var clickerID string
+	if i.Member != nil && i.Member.User != nil {
+		clickerID = i.Member.User.ID
+	} else if i.User != nil {
+		clickerID = i.User.ID
+	}
+	if clickerID != targetUserID {
+		s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+			Type: discordgo.InteractionResponseChannelMessageWithSource,
+			Data: &discordgo.InteractionResponseData{
+				Content: "このボタンはあなた宛てではありません。",
+				Flags:   discordgo.MessageFlagsEphemeral,
+			},
+		})
+		return
+	}
+
+	switch action {
+	case "yes":
+		if err := service.OptOutDetection(i.GuildID, targetUserID); err != nil {
+			logger.Error("Failed to opt-out via prompt", "error", err, "user_id", targetUserID)
+			s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+				Type: discordgo.InteractionResponseChannelMessageWithSource,
+				Data: &discordgo.InteractionResponseData{
+					Content: "設定に失敗しました。あとで `/detect off` をお試しください。",
+					Flags:   discordgo.MessageFlagsEphemeral,
+				},
+			})
+			return
+		}
+		s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+			Type: discordgo.InteractionResponseChannelMessageWithSource,
+			Data: &discordgo.InteractionResponseData{
+				Content: "川柳検出をオフにしました。再度有効にするには `/detect on` を使用してください。",
+				Flags:   discordgo.MessageFlagsEphemeral,
+			},
+		})
+	case "no":
+		s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+			Type: discordgo.InteractionResponseChannelMessageWithSource,
+			Data: &discordgo.InteractionResponseData{
+				Content: "そのままにします。引き続き川柳を検出します！",
+				Flags:   discordgo.MessageFlagsEphemeral,
+			},
+		})
+	}
+
+	// Delete the prompt message
+	if i.Message != nil {
+		_ = s.ChannelMessageDelete(i.ChannelID, i.Message.ID)
+	}
 }
 
 // isParentChannelMuted checks if the parent channel of a thread is muted.
@@ -981,6 +1190,86 @@ var reDiscordTokens = regexp.MustCompile(
 
 func containsDiscordTokens(s string) bool {
 	return reDiscordTokens.MatchString(s)
+}
+
+// --- False-positive prevention filters ---
+
+// isJapaneseChar returns true for hiragana, katakana, or kanji.
+func isJapaneseChar(r rune) bool {
+	return unicode.In(r, unicode.Hiragana, unicode.Katakana, unicode.Han)
+}
+
+// japaneseRatio returns the ratio of Japanese characters (hiragana+katakana+kanji)
+// to total non-whitespace runes.
+func japaneseRatio(s string) float64 {
+	var total, jp int
+	for _, r := range s {
+		if unicode.IsSpace(r) {
+			continue
+		}
+		total++
+		if isJapaneseChar(r) {
+			jp++
+		}
+	}
+	if total == 0 {
+		return 0
+	}
+	return float64(jp) / float64(total)
+}
+
+// hasMiddleSentencePunctuation returns true if sentence-ending punctuation
+// (。！？!?) appears anywhere except the very end of the text.
+// Poems typically don't have sentence breaks in the middle.
+func hasMiddleSentencePunctuation(s string) bool {
+	runes := []rune(strings.TrimSpace(s))
+	if len(runes) < 2 {
+		return false
+	}
+	// Check all characters except the last one
+	for _, r := range runes[:len(runes)-1] {
+		switch r {
+		case '。', '！', '？', '!', '?':
+			return true
+		}
+	}
+	return false
+}
+
+// falsePositivePhrases contains normalized substrings that commonly trigger
+// false positive detections. Checked after normalizeForMatch.
+var falsePositivePhrases = []string{
+	"おはようございます",
+	"おやすみなさい",
+	"ありがとうございます",
+	"よろしくおねがいします",
+	"おつかれさまです",
+	"おつかれさまでした",
+	"いただきます",
+	"ごちそうさまでした",
+	"いってきます",
+	"ただいま",
+	"おかえりなさい",
+	"それはいいですね",
+	"わかりました",
+	"なるほどですね",
+	"すみませんでした",
+	"ごめんなさい",
+	"こんにちは",
+	"こんばんは",
+	"さようなら",
+}
+
+// isFalsePositivePhrase checks if the normalized content matches a known
+// false-positive phrase.
+func isFalsePositivePhrase(content string) bool {
+	normalized := normalizeForMatch(content)
+	for _, phrase := range falsePositivePhrases {
+		if strings.Contains(normalized, phrase) {
+			return true
+		}
+	}
+	return false
 }
 
 // findHaikuSafe wraps haiku.Find with recover to prevent panics from crashing the bot.
@@ -1158,6 +1447,102 @@ func handlePoemDetected(s *discordgo.Session, m *discordgo.MessageCreate, parts 
 			logger.Info("Rolled back poem after reply failure", "senryu_id", created.ID, "channel_id", m.ChannelID)
 		}
 	}
+
+	// Track detected user for post-detection abuse check
+	recordDetectedUser(m.ChannelID, m.Author.ID)
+
+	// Auto-cooldown: prevent rapid re-detection of the same user
+	cooldown := config.GetConf().Detection.AutoCooldownSeconds
+	if cooldown > 0 {
+		service.SetTimeout(m.ChannelID, m.Author.ID, time.Duration(cooldown)*time.Second)
+	}
+}
+
+// handleHaikuDetected handles a detected 5-7-5 poem that contains a kigo (季語).
+func handleHaikuDetected(s *discordgo.Session, m *discordgo.MessageCreate, parts []string, kigo *KigoResult, spoiler bool) {
+	rec := model.Senryu{
+		ServerID:  m.GuildID,
+		AuthorID:  m.Author.ID,
+		Kamigo:    parts[0],
+		Nakasichi: parts[1],
+		Simogo:    parts[2],
+		Type:      model.PoemTypeHaiku,
+		Spoiler:   &spoiler,
+	}
+
+	created, err := service.CreateSenryu(rec)
+	if err != nil {
+		logger.Error("Failed to create haiku", "error", err)
+		metrics.RecordError("database")
+		s.MessageReactionAdd(m.ChannelID, m.ID, "❌")
+		return
+	}
+
+	// Record combo
+	combo := service.RecordCombo(m.GuildID, m.Author.ID)
+	comboText := service.GetComboText(combo)
+
+	fullText := strings.Join(parts, " ")
+	seasonInfo := fmt.Sprintf("%s %s（季語: %s）", kigo.Season.SeasonEmoji(), kigo.Season.SeasonName(), kigo.Word)
+	replyText := fmt.Sprintf("俳句を検出しました！\n「%s」\n%s", fullText, seasonInfo)
+	if spoiler {
+		replyText = fmt.Sprintf("俳句を検出しました！\n||「%s」||\n%s", fullText, seasonInfo)
+	}
+	if comboText != "" {
+		replyText += "\n" + comboText
+	}
+
+	msg := &discordgo.MessageSend{
+		Content:   replyText,
+		Reference: m.Reference(),
+	}
+
+	authorName := getDisplayName(s, m.GuildID, m.Author)
+	avatarURL := m.Author.AvatarURL("128")
+
+	var bgData []byte
+	if bg, bgErr := service.GetBackground(m.GuildID); bgErr == nil && bg != nil {
+		if data, readErr := os.ReadFile(bg.FilePath); readErr == nil {
+			bgData = data
+		}
+	}
+
+	renderOpts := senryuimg.RenderOptions{
+		AuthorName: authorName,
+		AvatarURL:  avatarURL,
+		Background: bgData,
+		Kamigo:     parts[0],
+		Nakasichi:  parts[1],
+		Simogo:     parts[2],
+	}
+
+	imgData, imgErr := senryuimg.RenderSenryu(renderOpts)
+	if imgErr != nil {
+		logger.Warn("Failed to render haiku image, sending text only", "error", imgErr)
+	} else {
+		msg.Files = []*discordgo.File{{
+			Name:        "haiku.webp",
+			ContentType: "image/webp",
+			Reader:      bytes.NewReader(imgData),
+		}}
+	}
+
+	if _, err := s.ChannelMessageSendComplex(m.ChannelID, msg); err != nil {
+		logger.Warn("Failed to send haiku reply", "error", err, "channel_id", m.ChannelID)
+		s.MessageReactionAdd(m.ChannelID, m.ID, "⚠️")
+		if delErr := service.DeleteSenryu(int(created.ID), m.GuildID); delErr != nil {
+			logger.Error("Failed to rollback haiku after reply failure", "error", delErr, "senryu_id", created.ID)
+		}
+	}
+
+	// Track detected user for post-detection abuse check
+	recordDetectedUser(m.ChannelID, m.Author.ID)
+
+	// Auto-cooldown
+	cooldown := config.GetConf().Detection.AutoCooldownSeconds
+	if cooldown > 0 {
+		service.SetTimeout(m.ChannelID, m.Author.ID, time.Duration(cooldown)*time.Second)
+	}
 }
 
 // handleJiyuritsuMatch handles a free-form haiku whitelist match.
@@ -1228,6 +1613,15 @@ func handleJiyuritsuMatch(s *discordgo.Session, m *discordgo.MessageCreate, matc
 			logger.Error("Failed to rollback jiyuritsu after reply failure", "error", delErr, "senryu_id", created.ID)
 		}
 	}
+
+	// Track detected user for post-detection abuse check
+	recordDetectedUser(m.ChannelID, m.Author.ID)
+
+	// Auto-cooldown
+	cooldown := config.GetConf().Detection.AutoCooldownSeconds
+	if cooldown > 0 {
+		service.SetTimeout(m.ChannelID, m.Author.ID, time.Duration(cooldown)*time.Second)
+	}
 }
 
 // handleGoGenRisshiDetected handles a detected 五言律詩.
@@ -1276,6 +1670,15 @@ func handleGoGenRisshiDetected(s *discordgo.Session, m *discordgo.MessageCreate,
 		if delErr := service.DeleteSenryu(int(created.ID), m.GuildID); delErr != nil {
 			logger.Error("Failed to rollback gogenrisshi after reply failure", "error", delErr, "senryu_id", created.ID)
 		}
+	}
+
+	// Track detected user for post-detection abuse check
+	recordDetectedUser(m.ChannelID, m.Author.ID)
+
+	// Auto-cooldown
+	cooldown := config.GetConf().Detection.AutoCooldownSeconds
+	if cooldown > 0 {
+		service.SetTimeout(m.ChannelID, m.Author.ID, time.Duration(cooldown)*time.Second)
 	}
 }
 

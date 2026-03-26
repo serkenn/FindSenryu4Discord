@@ -20,13 +20,22 @@ var (
 
 // Config holds all configuration
 type Config struct {
-	Discord  DiscordConfig  `koanf:"discord"`
-	Database DatabaseConfig `koanf:"database"`
-	Log      LogConfig      `koanf:"log"`
-	Admin    AdminConfig    `koanf:"admin"`
-	Server   ServerConfig   `koanf:"server"`
-	Backup   BackupConfig   `koanf:"backup"`
-	Web      WebConfig      `koanf:"web"`
+	Discord   DiscordConfig   `koanf:"discord"`
+	Database  DatabaseConfig  `koanf:"database"`
+	Log       LogConfig       `koanf:"log"`
+	Admin     AdminConfig     `koanf:"admin"`
+	Server    ServerConfig    `koanf:"server"`
+	Backup    BackupConfig    `koanf:"backup"`
+	Web       WebConfig       `koanf:"web"`
+	Detection DetectionConfig `koanf:"detection"`
+}
+
+// DetectionConfig holds false-positive prevention settings
+type DetectionConfig struct {
+	MinSenryuRunes     int     `koanf:"min_senryu_runes"`
+	MinTankaRunes      int     `koanf:"min_tanka_runes"`
+	MinJapaneseRatio   float64 `koanf:"min_japanese_ratio"`
+	AutoCooldownSeconds int    `koanf:"auto_cooldown_seconds"`
 }
 
 // DiscordConfig holds Discord-related configuration
@@ -149,6 +158,18 @@ func setDefaults(c *Config) {
 	}
 	if c.Web.FontPath == "" {
 		c.Web.FontPath = "data/fonts/kouzan.ttf"
+	}
+	if c.Detection.MinSenryuRunes == 0 {
+		c.Detection.MinSenryuRunes = 13
+	}
+	if c.Detection.MinTankaRunes == 0 {
+		c.Detection.MinTankaRunes = 22
+	}
+	if c.Detection.MinJapaneseRatio == 0 {
+		c.Detection.MinJapaneseRatio = 0.7
+	}
+	if c.Detection.AutoCooldownSeconds == 0 {
+		c.Detection.AutoCooldownSeconds = 60
 	}
 }
 

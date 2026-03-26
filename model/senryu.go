@@ -4,9 +4,10 @@ import "time"
 
 // PoemType represents the type of detected poem.
 const (
-	PoemTypeSenryu    = "senryu"    // 川柳 (5-7-5)
-	PoemTypeTanka     = "tanka"     // 短歌 (5-7-5-7-7)
-	PoemTypeJiyuritsu = "jiyuritsu" // 自由律俳句 (whitelist match)
+	PoemTypeSenryu      = "senryu"      // 川柳 (5-7-5, no kigo)
+	PoemTypeHaiku       = "haiku"       // 俳句 (5-7-5, with kigo)
+	PoemTypeTanka       = "tanka"       // 短歌 (5-7-5-7-7)
+	PoemTypeJiyuritsu   = "jiyuritsu"   // 自由律俳句 (whitelist match)
 	PoemTypeGoGenRisshi = "gogenrisshi" // 五言律詩 (5×8)
 )
 
