@@ -9,6 +9,7 @@ require (
 	github.com/cockroachdb/errors v1.11.3
 	github.com/fogleman/gg v1.3.0
 	github.com/ikawaha/kagome-dict/uni v1.1.9
+	github.com/ikawaha/kagome/v2 v2.9.4
 	github.com/jinzhu/gorm v1.9.16
 	github.com/knadh/koanf/parsers/toml v0.1.0
 	github.com/knadh/koanf/providers/env v1.0.0
@@ -32,7 +33,7 @@ require (
 	github.com/gogo/protobuf v1.3.2 // indirect
 	github.com/gorilla/websocket v1.5.3 // indirect
 	github.com/ikawaha/kagome-dict v1.0.9 // indirect
-	github.com/ikawaha/kagome/v2 v2.9.4 // indirect
+	github.com/ikawaha/kagome/v2 v2.9.4
 	github.com/jinzhu/inflection v1.0.0 // indirect
 	github.com/klauspost/compress v1.17.9 // indirect
 	github.com/knadh/koanf/maps v0.1.1 // indirect

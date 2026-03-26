@@ -46,6 +46,10 @@ var (
 
 	userCommands = []*discordgo.ApplicationCommand{
 		{
+			Name:        "help",
+			Description: "俳句・川柳・短歌のルールとコマンド一覧を表示します",
+		},
+		{
 			Name:        "mute",
 			Description: "このチャンネルでの川柳検出をミュートします（管理者/Bot管理者のみ）",
 		},
@@ -174,6 +178,7 @@ var (
 	}
 
 	commandHandlers = map[string]func(s *discordgo.Session, i *discordgo.InteractionCreate){
+		"help":      commands.HandleHelpCommand,
 		"mute":      handleMuteCommand,
 		"unmute":    handleUnmuteCommand,
 		"rank":      handleRankCommand,
@@ -194,6 +199,9 @@ func main() {
 
 	// Initialize haiku dictionary
 	haiku.UseDict(uni.Dict())
+
+	// Initialize fallback mora tokenizer
+	initMoraTokenizer()
 
 	// Load configuration
 	conf, err := config.Load("config.toml")
@@ -649,6 +657,11 @@ func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 						return
 					}
 				}
+				// Fallback: try kagome-based mora counting for tanka
+				if fbParts := fallbackHaikuDetect(normalizedContent, []int{5, 7, 5, 7, 7}); len(fbParts) == 5 {
+					handlePoemDetected(s, m, fbParts, model.PoemTypeTanka, spoiler)
+					return
+				}
 			}
 
 			// 3. Try 五言律詩 detection (5×8 = 40 kanji)
@@ -665,7 +678,12 @@ func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 					parts := strings.Split(h[0], " ")
 					if len(parts) == 3 {
 						handlePoemDetected(s, m, parts, model.PoemTypeSenryu, spoiler)
+						return
 					}
+				}
+				// Fallback: try kagome-based mora counting for senryu
+				if fbParts := fallbackHaikuDetect(normalizedContent, []int{5, 7, 5}); len(fbParts) == 3 {
+					handlePoemDetected(s, m, fbParts, model.PoemTypeSenryu, spoiler)
 				}
 			}
 		}

@@ -177,16 +177,30 @@ func RenderSenryu(opts RenderOptions) ([]byte, error) {
 
 		authAreaH = 0
 		if opts.AuthorName != "" {
-			authAreaH = float64(len([]rune(opts.AuthorName)))*authCharH + authFontSz
+			authNameChars := countGraphemes(opts.AuthorName)
+			authAreaH = float64(authNameChars)*authCharH + authFontSz*0.5
 			if opts.AvatarURL != "" {
-				authAreaH += fontSize * 0.9
+				authAreaH += fontSize * 0.85
 			}
-			authAreaH += fontSize * 0.3
 		}
 
 		poemH = float64(maxChars)*charH + float64(numCols-1)*stg
-		w = int(pX*2 + float64(numCols-1)*colSpc + fontSize)
-		h = int(pTop + poemH + pBot + authAreaH)
+
+		if numCols == 1 {
+			// Single column: author placed as a 2nd column to the left
+			// Width needs room for poem + author column
+			authorColW := authFontSz * 1.5
+			if opts.AuthorName != "" {
+				w = int(pX*2 + fontSize + authorColW)
+			} else {
+				w = int(pX*2 + fontSize)
+			}
+			// Height is the taller of poem or author area
+			h = int(pTop + math.Max(poemH, authAreaH) + pBot)
+		} else {
+			w = int(pX*2 + float64(numCols-1)*colSpc + fontSize)
+			h = int(pTop + poemH + pBot + authAreaH)
+		}
 		return
 	}
 
@@ -268,16 +282,20 @@ func RenderSenryu(opts RenderOptions) ([]byte, error) {
 		}
 	}
 
-	// Draw author name (vertical, left side, near bottom)
+	// Draw author name (vertical)
 	if opts.AuthorName != "" {
-		authorX := startX - float64(numCols-1)*colSpacing - colSpacing*0.5
-		if numCols == 1 {
-			authorX = startX - mainFontSize*0.5
-		}
-
-		// Author starts after the poem area
-		authorStartY := padTop + poemHeight + mainFontSize*0.3
 		aCharH := authorFontSize * 1.3
+		var authorX, authorStartY float64
+
+		if numCols == 1 {
+			// Single column: author placed as a left column, starting from top
+			authorX = startX - mainFontSize*0.8
+			authorStartY = padTop + poemHeight*0.3
+		} else {
+			// Multi-column: author placed left of last column, below poem
+			authorX = startX - float64(numCols-1)*colSpacing - colSpacing*0.5
+			authorStartY = padTop + poemHeight + mainFontSize*0.3
+		}
 
 		for i, ch := range authorChars {
 			y := authorStartY + float64(i)*aCharH + authorFontSize

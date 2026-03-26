@@ -80,14 +80,10 @@ var jiyuritsuWhitelist = []jiyuritsuEntry{
 	// ===== 中塚一碧楼 (Nakatsuka Ippekiro) =====
 	{"昼の虫よけて歩く僧正", "中塚一碧楼"},
 
-	// ===== ユーザー報告の未検出句 =====
-	{"春が来る裸のおっさんまた１人", ""},
-	{"春が来る裸のおっさんまた1人", ""},
-	{"朝餉をさ昼に食べるよはよ起きろ", ""},
 }
 
 // normalizeForMatch normalizes text for fuzzy matching:
-// removes spaces, converts to lowercase, normalizes some characters.
+// removes spaces, converts to lowercase, normalizes numbers and kana variations.
 func normalizeForMatch(s string) string {
 	s = strings.ReplaceAll(s, " ", "")
 	s = strings.ReplaceAll(s, "　", "")
@@ -99,7 +95,39 @@ func normalizeForMatch(s string) string {
 	s = strings.ReplaceAll(s, "ヱ", "エ")
 	s = strings.ReplaceAll(s, "づ", "ず")
 	s = strings.ReplaceAll(s, "ぢ", "じ")
+	// Normalize all number forms (kanji, full-width, half-width) to "0"
+	s = normalizeNumbers(s)
 	return s
+}
+
+// normalizeNumbers replaces all numeric representations with "0" for fuzzy matching.
+func normalizeNumbers(s string) string {
+	var result []rune
+	for _, r := range s {
+		if isNumericRune(r) {
+			result = append(result, '0')
+		} else {
+			result = append(result, r)
+		}
+	}
+	return string(result)
+}
+
+// isNumericRune returns true for any numeric character:
+// half-width digits, full-width digits, and kanji numerals.
+func isNumericRune(r rune) bool {
+	switch {
+	case r >= '0' && r <= '9':
+		return true
+	case r >= '０' && r <= '９':
+		return true
+	}
+	switch r {
+	case '一', '二', '三', '四', '五', '六', '七', '八', '九', '十',
+		'百', '千', '万', '億', '兆', '壱', '弐', '参':
+		return true
+	}
+	return false
 }
 
 // matchJiyuritsu checks if the given message contains a known free-form haiku.
