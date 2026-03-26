@@ -76,6 +76,7 @@ func HandleHelpCommand(s *discordgo.Session, i *discordgo.InteractionCreate) {
 					"`/mute` / `/unmute` — チャンネルミュート\n" +
 					"`/channel` — チャンネルタイプ別設定\n" +
 					"`/timeout-role add|remove|list` — timeout権限ロール管理\n" +
+					"`/info` — 自分のステータス確認\n" +
 					"`/doctor` — 診断\n" +
 					"`/contact` — 管理者に連絡",
 			},

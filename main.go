@@ -59,6 +59,10 @@ var (
 			Description: "俳句・川柳・短歌のルールとコマンド一覧を表示します",
 		},
 		{
+			Name:        "info",
+			Description: "自分のタイムアウト状況や検出設定を確認します",
+		},
+		{
 			Name:        "mute",
 			Description: "このチャンネルでの川柳検出をミュートします（管理者/Bot管理者のみ）",
 		},
@@ -188,6 +192,7 @@ var (
 
 	commandHandlers = map[string]func(s *discordgo.Session, i *discordgo.InteractionCreate){
 		"help":      commands.HandleHelpCommand,
+		"info":      commands.HandleInfoCommand,
 		"mute":      handleMuteCommand,
 		"unmute":    handleUnmuteCommand,
 		"rank":      handleRankCommand,
