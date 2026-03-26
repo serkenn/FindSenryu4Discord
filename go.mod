@@ -17,6 +17,7 @@ require (
 	github.com/lib/pq v1.10.9
 	github.com/mattn/go-sqlite3 v1.14.33
 	github.com/prometheus/client_golang v1.20.5
+	github.com/rivo/uniseg v0.4.7
 	golang.org/x/image v0.23.0
 )
 

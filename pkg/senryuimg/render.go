@@ -17,7 +17,8 @@ import (
 	"os"
 	"strings"
 	"time"
-	"unicode/utf8"
+
+	"github.com/rivo/uniseg"
 
 	"github.com/chai2010/webp"
 	"github.com/fogleman/gg"
@@ -41,13 +42,20 @@ type RenderOptions struct {
 }
 
 var (
-	loadedFont *truetype.Font
-	fontPath   = "data/fonts/kouzan.ttf"
+	loadedFont         *truetype.Font
+	loadedFallbackFont *truetype.Font
+	fontPath           = "data/fonts/kouzan.ttf"
+	fallbackFontPath   string
 )
 
 // SetFontPath overrides the default font path.
 func SetFontPath(path string) {
 	fontPath = path
+}
+
+// SetFallbackFontPath sets the fallback font path for missing glyphs.
+func SetFallbackFontPath(path string) {
+	fallbackFontPath = path
 }
 
 func getFont() (*truetype.Font, error) {
@@ -64,6 +72,48 @@ func getFont() (*truetype.Font, error) {
 	}
 	loadedFont = f
 	return loadedFont, nil
+}
+
+func getFallbackFont() *truetype.Font {
+	if loadedFallbackFont != nil {
+		return loadedFallbackFont
+	}
+	if fallbackFontPath == "" {
+		return nil
+	}
+	fontBytes, err := os.ReadFile(fallbackFontPath)
+	if err != nil {
+		logger.Warn("Failed to read fallback font file", "path", fallbackFontPath, "error", err)
+		return nil
+	}
+	f, err := truetype.Parse(fontBytes)
+	if err != nil {
+		logger.Warn("Failed to parse fallback font", "error", err)
+		return nil
+	}
+	loadedFallbackFont = f
+	return loadedFallbackFont
+}
+
+// hasGlyph checks if the font has a glyph for the given rune.
+func hasGlyph(f *truetype.Font, ch rune) bool {
+	return f.Index(ch) != 0
+}
+
+// splitGraphemes splits a string into grapheme clusters (correctly handles emoji).
+// Each element is a single visual character (which may be multiple runes for emoji).
+func splitGraphemes(s string) []string {
+	var clusters []string
+	gr := uniseg.NewGraphemes(s)
+	for gr.Next() {
+		clusters = append(clusters, gr.Str())
+	}
+	return clusters
+}
+
+// countGraphemes returns the number of grapheme clusters in a string.
+func countGraphemes(s string) int {
+	return uniseg.GraphemeClusterCount(s)
 }
 
 // RenderSenryu generates a senryu image and returns it as webp bytes.
@@ -96,10 +146,10 @@ func RenderSenryu(opts RenderOptions) ([]byte, error) {
 		return nil, fmt.Errorf("no phrases to render")
 	}
 
-	// Find the longest phrase
+	// Find the longest phrase (using grapheme clusters for correct emoji counting)
 	maxChars := 0
 	for _, p := range phrases {
-		n := utf8.RuneCountInString(p)
+		n := countGraphemes(p)
 		if n > maxChars {
 			maxChars = n
 		}
@@ -201,14 +251,20 @@ func RenderSenryu(opts RenderOptions) ([]byte, error) {
 
 	for col, phrase := range phrases {
 		x := startX - float64(col)*colSpacing
-		chars := []rune(phrase)
+		graphemes := splitGraphemes(phrase)
 
 		// 575 Online style: each column starts progressively lower
 		yOffset := padTop + float64(col)*stagger
 
-		for i, ch := range chars {
+		for i, cluster := range graphemes {
 			y := yOffset + float64(i)*cHeight + mainFontSize
-			drawChar(dc, mainFace, textColor, x, y, ch)
+			runes := []rune(cluster)
+			if len(runes) == 1 {
+				drawChar(dc, mainFace, textColor, x, y, runes[0])
+			} else {
+				// Multi-rune grapheme cluster (e.g., emoji) — draw as string
+				drawString(dc, mainFace, textColor, x, y, cluster)
+			}
 		}
 	}
 
@@ -249,12 +305,77 @@ func RenderSenryu(opts RenderOptions) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
+// verticalCharMap maps characters to their vertical writing equivalents.
+var verticalCharMap = map[rune]rune{
+	'「': '﹁',
+	'」': '﹂',
+	'『': '﹃',
+	'』': '﹄',
+	'（': '︵',
+	'）': '︶',
+	'(': '︵',
+	')': '︶',
+	'【': '︻',
+	'】': '︼',
+	'〔': '︹',
+	'〕': '︺',
+	'｛': '︷',
+	'｝': '︸',
+	'〈': '︿',
+	'〉': '﹀',
+	'《': '︽',
+	'》': '︾',
+	'。': '︒',
+	'、': '︑',
+}
+
+// isLongVowelMark returns true for characters that should be drawn as a vertical line.
+func isLongVowelMark(ch rune) bool {
+	return ch == 'ー' || ch == '～' || ch == '〜' || ch == '—' || ch == '―'
+}
+
 // drawChar draws a single character at the given position.
+// Handles vertical writing transformations for brackets, punctuation, and long vowel marks.
+// Falls back to the fallback font if the main font doesn't have the glyph.
 func drawChar(dc *gg.Context, face font.Face, col color.Color, x, y float64, ch rune) {
+	// Handle long vowel mark (ー) — draw as vertical line
+	if isLongVowelMark(ch) {
+		r, g, b, _ := col.RGBA()
+		dc.SetColor(color.RGBA{R: uint8(r >> 8), G: uint8(g >> 8), B: uint8(b >> 8), A: 255})
+		metrics := face.Metrics()
+		lineH := float64(metrics.Ascent.Round()) * 0.7
+		lineW := 2.5
+		dc.DrawRoundedRectangle(x-lineW/2, y-lineH, lineW, lineH, lineW/2)
+		dc.Fill()
+		return
+	}
+
+	// Map to vertical writing form if available
+	if vert, ok := verticalCharMap[ch]; ok {
+		ch = vert
+	}
+
+	// Check if main font has the glyph; if not, try fallback
+	useFace := face
+	if loadedFont != nil && !hasGlyph(loadedFont, ch) {
+		if fb := getFallbackFont(); fb != nil {
+			// Create a fallback face with the same metrics as the main face
+			m := face.Metrics()
+			fontSize := float64(m.Ascent.Round()+m.Descent.Round()) * 0.85
+			fbFace := truetype.NewFace(fb, &truetype.Options{
+				Size:    fontSize,
+				DPI:     72,
+				Hinting: font.HintingFull,
+			})
+			useFace = fbFace
+			defer fbFace.Close()
+		}
+	}
+
 	d := &font.Drawer{
 		Dst:  dc.Image().(*image.RGBA),
 		Src:  image.NewUniform(col),
-		Face: face,
+		Face: useFace,
 	}
 
 	// Measure the character width for centering
@@ -266,6 +387,39 @@ func drawChar(dc *gg.Context, face font.Face, col color.Color, x, y float64, ch 
 		Y: fixed.I(int(y)),
 	}
 	d.DrawString(string(ch))
+}
+
+// drawString draws a multi-rune string (e.g., emoji grapheme cluster) centered at position.
+func drawString(dc *gg.Context, face font.Face, col color.Color, x, y float64, s string) {
+	useFace := face
+	// Try fallback font for emoji / missing glyphs
+	runes := []rune(s)
+	if loadedFont != nil && len(runes) > 0 && !hasGlyph(loadedFont, runes[0]) {
+		if fb := getFallbackFont(); fb != nil {
+			m := face.Metrics()
+			fontSize := float64(m.Ascent.Round()+m.Descent.Round()) * 0.85
+			fbFace := truetype.NewFace(fb, &truetype.Options{
+				Size:    fontSize,
+				DPI:     72,
+				Hinting: font.HintingFull,
+			})
+			useFace = fbFace
+			defer fbFace.Close()
+		}
+	}
+
+	d := &font.Drawer{
+		Dst:  dc.Image().(*image.RGBA),
+		Src:  image.NewUniform(col),
+		Face: useFace,
+	}
+	advance := d.MeasureString(s)
+	advPx := float64(advance >> 6)
+	d.Dot = fixed.Point26_6{
+		X: fixed.I(int(x - advPx/2)),
+		Y: fixed.I(int(y)),
+	}
+	d.DrawString(s)
 }
 
 // drawHanko draws the user's avatar as a circular red stamp.

@@ -4,9 +4,10 @@ import "time"
 
 // PoemType represents the type of detected poem.
 const (
-	PoemTypeSenryu  = "senryu"  // 川柳 (5-7-5)
-	PoemTypeTanka   = "tanka"   // 短歌 (5-7-5-7-7)
+	PoemTypeSenryu    = "senryu"    // 川柳 (5-7-5)
+	PoemTypeTanka     = "tanka"     // 短歌 (5-7-5-7-7)
 	PoemTypeJiyuritsu = "jiyuritsu" // 自由律俳句 (whitelist match)
+	PoemTypeGoGenRisshi = "gogenrisshi" // 五言律詩 (5×8)
 )
 
 // Senryu is struct of senryu (also used for tanka and free-form haiku).
@@ -49,4 +50,10 @@ type BackgroundImage struct {
 	GuildID   string    `gorm:"primaryKey;column:guild_id"`
 	FilePath  string    `gorm:"column:file_path"`
 	UpdatedAt time.Time `gorm:"column:updated_at"`
+}
+
+// TimeoutRoleSetting stores roles that are allowed to use /timeout in a guild.
+type TimeoutRoleSetting struct {
+	GuildID string `gorm:"primaryKey;column:guild_id"`
+	RoleID  string `gorm:"primaryKey;column:role_id"`
 }

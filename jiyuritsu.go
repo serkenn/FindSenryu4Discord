@@ -55,6 +55,10 @@ var jiyuritsuWhitelist = []jiyuritsuEntry{
 	{"捨てきれない荷物のおもさまへうしろ", "種田山頭火"},
 	{"鴉啼いてわたしも一人", "種田山頭火"},
 
+	// ===== 松尾芭蕉 (Matsuo Basho) =====
+	{"閑さや岩にしみ入る蝉の声", "松尾芭蕉"},
+	{"しずかさや岩にしみ入る蝉の声", "松尾芭蕉"},
+
 	// ===== 荻原井泉水 (Ogiwara Seisensui) =====
 	{"陽へ病む", "荻原井泉水"},
 	{"よい湯からよい月が出た", "荻原井泉水"},
@@ -75,6 +79,11 @@ var jiyuritsuWhitelist = []jiyuritsuEntry{
 
 	// ===== 中塚一碧楼 (Nakatsuka Ippekiro) =====
 	{"昼の虫よけて歩く僧正", "中塚一碧楼"},
+
+	// ===== ユーザー報告の未検出句 =====
+	{"春が来る裸のおっさんまた１人", ""},
+	{"春が来る裸のおっさんまた1人", ""},
+	{"朝餉をさ昼に食べるよはよ起きろ", ""},
 }
 
 // normalizeForMatch normalizes text for fuzzy matching:

@@ -215,6 +215,10 @@ func getUserID(i *discordgo.InteractionCreate) string {
 }
 
 func isServerAdmin(i *discordgo.InteractionCreate) bool {
+	// Bot owners are always considered admins
+	if permissions.IsOwner(getUserID(i)) {
+		return true
+	}
 	if i.Member == nil {
 		return false
 	}

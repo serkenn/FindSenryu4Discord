@@ -196,6 +196,16 @@ func (m *Manager) NotifyGuildLeave(guild *discordgo.GuildDelete, deletedSenryus,
 	}
 }
 
+// NotifyLog sends a text message to the log channel.
+func (m *Manager) NotifyLog(message string) {
+	if m.logChannelID == "" {
+		return
+	}
+	if _, err := m.session.ChannelMessageSend(m.logChannelID, message); err != nil {
+		logger.Error("Failed to send log notification", "error", err)
+	}
+}
+
 func (m *Manager) run() {
 	defer close(m.stoppedCh)
 

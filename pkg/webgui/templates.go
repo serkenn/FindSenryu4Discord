@@ -61,8 +61,7 @@ body {
 .senryu-card:hover { transform: translateY(-4px); }
 .senryu-card img {
   width: 100%;
-  aspect-ratio: 2/3;
-  object-fit: cover;
+  object-fit: contain;
   background: #faf8f5;
 }
 .senryu-card .info {

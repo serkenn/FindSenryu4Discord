@@ -8,6 +8,7 @@ import (
 	"os/signal"
 	"regexp"
 	"strings"
+	"unicode"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -40,31 +41,25 @@ var (
 	expectedShards  atomic.Int32
 	connectedShards atomic.Int32
 
-	// adminPermission is used for DefaultMemberPermissions on admin-only commands.
-	adminPermission int64 = discordgo.PermissionAdministrator
-
 	minTimeoutMinutes float64 = 1
 	maxTimeoutMinutes float64 = 1440
 
 	userCommands = []*discordgo.ApplicationCommand{
 		{
-			Name:                     "mute",
-			Description:              "このチャンネルでの川柳検出をミュートします（管理者のみ）",
-			DefaultMemberPermissions: &adminPermission,
+			Name:        "mute",
+			Description: "このチャンネルでの川柳検出をミュートします（管理者/Bot管理者のみ）",
 		},
 		{
-			Name:                     "unmute",
-			Description:              "このチャンネルでの川柳検出のミュートを解除します（管理者のみ）",
-			DefaultMemberPermissions: &adminPermission,
+			Name:        "unmute",
+			Description: "このチャンネルでの川柳検出のミュートを解除します（管理者/Bot管理者のみ）",
 		},
 		{
 			Name:        "rank",
 			Description: "ギルド内で詠んだ回数が多い人のランキングを表示します",
 		},
 		{
-			Name:                     "channel",
-			Description:              "チャンネルタイプ別の川柳検出設定を変更します",
-			DefaultMemberPermissions: &adminPermission,
+			Name:        "channel",
+			Description: "チャンネルタイプ別の川柳検出設定を変更します（管理者/Bot管理者のみ）",
 		},
 		{
 			Name:        "doctor",
@@ -97,7 +92,7 @@ var (
 		},
 		{
 			Name:        "timeout",
-			Description: "指定した分数だけ川柳検出を一時停止します",
+			Description: "川柳検出の一時停止（管理者または許可ロールのみ）",
 			Options: []*discordgo.ApplicationCommandOption{
 				{
 					Type:        discordgo.ApplicationCommandOptionInteger,
@@ -106,6 +101,43 @@ var (
 					Required:    false,
 					MinValue:    &minTimeoutMinutes,
 					MaxValue:    maxTimeoutMinutes,
+				},
+			},
+		},
+		{
+			Name:        "timeout-role",
+			Description: "timeout権限ロールを管理します（管理者/Bot管理者のみ）",
+			Options: []*discordgo.ApplicationCommandOption{
+				{
+					Type:        discordgo.ApplicationCommandOptionSubCommand,
+					Name:        "add",
+					Description: "timeout権限を付与するロールを追加",
+					Options: []*discordgo.ApplicationCommandOption{
+						{
+							Type:        discordgo.ApplicationCommandOptionRole,
+							Name:        "role",
+							Description: "timeout権限を付与するロール",
+							Required:    true,
+						},
+					},
+				},
+				{
+					Type:        discordgo.ApplicationCommandOptionSubCommand,
+					Name:        "remove",
+					Description: "timeout権限ロールを削除",
+					Options: []*discordgo.ApplicationCommandOption{
+						{
+							Type:        discordgo.ApplicationCommandOptionRole,
+							Name:        "role",
+							Description: "timeout権限を解除するロール",
+							Required:    true,
+						},
+					},
+				},
+				{
+					Type:        discordgo.ApplicationCommandOptionSubCommand,
+					Name:        "list",
+					Description: "timeout権限のあるロール一覧を表示",
 				},
 			},
 		},
@@ -151,8 +183,9 @@ var (
 		"admin":     commands.HandleAdminCommand,
 		"contact":   commands.HandleContactCommand,
 		"blacklist": commands.HandleBlacklistCommand,
-		"timeout":   commands.HandleTimeoutCommand,
-		"compose":   commands.HandleComposeCommand,
+		"timeout":      commands.HandleTimeoutCommand,
+		"timeout-role": commands.HandleTimeoutRoleCommand,
+		"compose":      commands.HandleComposeCommand,
 	}
 )
 
@@ -188,6 +221,9 @@ func main() {
 
 	// Set font path for senryu image generation
 	senryuimg.SetFontPath(conf.Web.FontPath)
+	if conf.Web.FallbackFontPath != "" {
+		senryuimg.SetFallbackFontPath(conf.Web.FallbackFontPath)
+	}
 
 	// Start health check server
 	healthServer, err := health.StartServer()
@@ -321,12 +357,13 @@ func main() {
 		adminNotifier.Start()
 		adminNotifier.NotifyStarted()
 	}
-	// Start periodic timeout cleanup (every 10 minutes)
+	// Start periodic cleanup (every 10 minutes)
 	go func() {
 		ticker := time.NewTicker(10 * time.Minute)
 		defer ticker.Stop()
 		for range ticker.C {
 			service.CleanupExpiredTimeouts()
+			service.CleanupExpiredCombos()
 		}
 	}()
 
@@ -564,6 +601,11 @@ func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 		return
 	}
 
+	// Check for abusive replies to the bot's messages
+	if handleAbusiveReply(s, m) {
+		return
+	}
+
 	if handleYomeYomuna(m, s) {
 		return
 	}
@@ -590,13 +632,16 @@ func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 				return
 			}
 
+			// Normalize full-width characters for better detection
+			normalizedContent := normalizeForDetection(content)
+
 			// Strip spaces/punctuation for length check
-			contentRunes := []rune(strings.ReplaceAll(strings.ReplaceAll(content, " ", ""), "　", ""))
+			contentRunes := []rune(strings.ReplaceAll(strings.ReplaceAll(normalizedContent, " ", ""), "　", ""))
 
 			// 2. Try tanka detection (5-7-5-7-7) — longer pattern first
 			// Max ~50 chars to prevent false positives from long messages
 			if len(contentRunes) <= 80 {
-				t := findHaikuSafe(content, []int{5, 7, 5, 7, 7})
+				t := findHaikuSafe(normalizedContent, []int{5, 7, 5, 7, 7})
 				if len(t) != 0 {
 					parts := strings.Split(t[0], " ")
 					if len(parts) == 5 {
@@ -606,10 +651,16 @@ func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 				}
 			}
 
-			// 3. Try senryu detection (5-7-5)
+			// 3. Try 五言律詩 detection (5×8 = 40 kanji)
+			if goGenPhrases := detectGoGenRisshi(normalizedContent); goGenPhrases != nil {
+				handleGoGenRisshiDetected(s, m, goGenPhrases, spoiler)
+				return
+			}
+
+			// 4. Try senryu detection (5-7-5)
 			// Max ~30 chars to prevent false positives from long messages
 			if len(contentRunes) <= 50 {
-				h := findHaikuSafe(content, []int{5, 7, 5})
+				h := findHaikuSafe(normalizedContent, []int{5, 7, 5})
 				if len(h) != 0 {
 					parts := strings.Split(h[0], " ")
 					if len(parts) == 3 {
@@ -626,7 +677,12 @@ var medals = []string{"🥇", "🥈", "🥉", "🎖️", "🎖️"}
 // canMuteUnmute checks if the user has permission to mute/unmute.
 // Allowed: Discord administrators or bot owner_ids.
 func canMuteUnmute(s *discordgo.Session, i *discordgo.InteractionCreate) bool {
-	userID := i.Member.User.ID
+	var userID string
+	if i.Member != nil && i.Member.User != nil {
+		userID = i.Member.User.ID
+	} else if i.User != nil {
+		userID = i.User.ID
+	}
 
 	// Bot owners always allowed
 	if permissions.IsOwner(userID) {
@@ -634,9 +690,11 @@ func canMuteUnmute(s *discordgo.Session, i *discordgo.InteractionCreate) bool {
 	}
 
 	// Check Discord administrator permission
-	perms := i.Member.Permissions
-	if perms&discordgo.PermissionAdministrator != 0 {
-		return true
+	if i.Member != nil {
+		perms := i.Member.Permissions
+		if perms&discordgo.PermissionAdministrator != 0 {
+			return true
+		}
 	}
 
 	return false
@@ -803,6 +861,76 @@ func handleYomeYomuna(m *discordgo.MessageCreate, s *discordgo.Session) bool {
 	return false
 }
 
+// abusiveWords contains words/phrases that trigger auto-blacklisting when
+// directed at the bot in a reply.
+var abusiveWords = []string{
+	"死ね", "しね", "シネ",
+	"くたばれ", "消えろ", "きえろ",
+	"うざい", "ウザい", "うぜえ", "ウゼえ", "うぜー", "ウゼー",
+	"邪魔", "じゃま",
+	"きもい", "キモい", "きめえ", "キメえ",
+	"ゴミ", "ごみ", "カス", "かす",
+	"クソ", "くそ", "糞",
+	"黙れ", "だまれ",
+	"殺す", "ころす",
+}
+
+// handleAbusiveReply detects abusive replies to the bot's messages and auto-blacklists the user.
+// Returns true if an abusive reply was handled.
+func handleAbusiveReply(s *discordgo.Session, m *discordgo.MessageCreate) bool {
+	// Only check replies
+	if m.MessageReference == nil || m.MessageReference.MessageID == "" {
+		return false
+	}
+
+	// Check if the replied message is from our bot
+	refMsg, err := s.ChannelMessage(m.ChannelID, m.MessageReference.MessageID)
+	if err != nil {
+		return false
+	}
+	if refMsg.Author == nil || refMsg.Author.ID != s.State.User.ID {
+		return false
+	}
+
+	// Check if the reply contains abusive words
+	contentLower := strings.ToLower(m.Content)
+	abusive := false
+	for _, word := range abusiveWords {
+		if strings.Contains(contentLower, strings.ToLower(word)) {
+			abusive = true
+			break
+		}
+	}
+	if !abusive {
+		return false
+	}
+
+	// Auto-blacklist the user
+	if err := service.OptOutDetection(m.GuildID, m.Author.ID); err != nil {
+		logger.Error("Failed to auto-blacklist abusive user", "error", err, "user_id", m.Author.ID)
+		return false
+	}
+
+	logger.Info("Auto-blacklisted user for abusive reply",
+		"user_id", m.Author.ID,
+		"guild_id", m.GuildID,
+		"content", m.Content,
+	)
+
+	// Notify the user
+	replyText := fmt.Sprintf("<@%s> 暴言が検出されたため、このサーバーでの川柳検出を自動的にオフにしました。\n再度有効にするには `/detect on` を使用してください。", m.Author.ID)
+	s.ChannelMessageSendReply(m.ChannelID, replyText, m.Reference())
+
+	// Notify admin
+	if adminNotifier != nil {
+		displayName := getDisplayName(s, m.GuildID, m.Author)
+		adminNotifier.NotifyLog(fmt.Sprintf("⚠️ 暴言による自動ブラックリスト\nユーザー: %s (`%s`)\nサーバー: `%s`\n内容: %s",
+			displayName, m.Author.ID, m.GuildID, m.Content))
+	}
+
+	return true
+}
+
 // isParentChannelMuted checks if the parent channel of a thread is muted.
 func isParentChannelMuted(ch *discordgo.Channel) bool {
 	if ch.ParentID == "" {
@@ -848,6 +976,63 @@ func findHaikuSafe(content string, rule []int) (result []string) {
 	return haiku.Find(content, rule)
 }
 
+// isKanji returns true if the rune is a CJK unified ideograph.
+func isKanji(r rune) bool {
+	return unicode.Is(unicode.Han, r)
+}
+
+// detectGoGenRisshi checks if the content is a 五言律詩 (5-character × 8-line Chinese regulated verse).
+// Returns the 8 phrases if detected, nil otherwise.
+func detectGoGenRisshi(content string) []string {
+	// Remove all whitespace and punctuation
+	var runes []rune
+	for _, r := range content {
+		if isKanji(r) {
+			runes = append(runes, r)
+		}
+	}
+
+	// 五言律詩 = exactly 40 kanji characters, split into 8 lines of 5
+	if len(runes) != 40 {
+		return nil
+	}
+
+	// Verify the original content is mostly kanji (allow some punctuation/whitespace)
+	totalRunes := []rune(content)
+	kanjiRatio := float64(len(runes)) / float64(len(totalRunes))
+	if kanjiRatio < 0.7 {
+		return nil
+	}
+
+	phrases := make([]string, 8)
+	for i := 0; i < 8; i++ {
+		phrases[i] = string(runes[i*5 : (i+1)*5])
+	}
+	return phrases
+}
+
+// normalizeForDetection preprocesses text for better haiku detection.
+// Converts full-width numbers/letters to half-width, normalizes punctuation.
+func normalizeForDetection(s string) string {
+	var result []rune
+	for _, r := range s {
+		switch {
+		// Full-width digits → half-width
+		case r >= '０' && r <= '９':
+			result = append(result, r-'０'+'0')
+		// Full-width upper letters → half-width
+		case r >= 'Ａ' && r <= 'Ｚ':
+			result = append(result, r-'Ａ'+'A')
+		// Full-width lower letters → half-width
+		case r >= 'ａ' && r <= 'ｚ':
+			result = append(result, r-'ａ'+'a')
+		default:
+			result = append(result, r)
+		}
+	}
+	return string(result)
+}
+
 var reSpoiler = regexp.MustCompile(`\|\|.+?\|\|`)
 
 func containsSpoiler(s string) bool {
@@ -878,8 +1063,13 @@ func handlePoemDetected(s *discordgo.Session, m *discordgo.MessageCreate, parts 
 	if err != nil {
 		logger.Error("Failed to create poem", "error", err, "type", poemType)
 		metrics.RecordError("database")
+		s.MessageReactionAdd(m.ChannelID, m.ID, "❌")
 		return
 	}
+
+	// Record combo
+	combo := service.RecordCombo(m.GuildID, m.Author.ID)
+	comboText := service.GetComboText(combo)
 
 	fullText := strings.Join(parts, " ")
 	typeName := "川柳"
@@ -889,6 +1079,9 @@ func handlePoemDetected(s *discordgo.Session, m *discordgo.MessageCreate, parts 
 	replyText := fmt.Sprintf("%sを検出しました！\n「%s」", typeName, fullText)
 	if spoiler {
 		replyText = fmt.Sprintf("%sを検出しました！\n||「%s」||", typeName, fullText)
+	}
+	if comboText != "" {
+		replyText += "\n" + comboText
 	}
 
 	msg := &discordgo.MessageSend{
@@ -940,6 +1133,7 @@ func handlePoemDetected(s *discordgo.Session, m *discordgo.MessageCreate, parts 
 
 	if _, err := s.ChannelMessageSendComplex(m.ChannelID, msg); err != nil {
 		logger.Warn("Failed to send poem reply", "error", err, "channel_id", m.ChannelID)
+		s.MessageReactionAdd(m.ChannelID, m.ID, "⚠️")
 		if delErr := service.DeleteSenryu(int(created.ID), m.GuildID); delErr != nil {
 			logger.Error("Failed to rollback poem after reply failure", "error", delErr, "senryu_id", created.ID)
 		} else {
@@ -962,12 +1156,20 @@ func handleJiyuritsuMatch(s *discordgo.Session, m *discordgo.MessageCreate, matc
 	if err != nil {
 		logger.Error("Failed to create jiyuritsu record", "error", err)
 		metrics.RecordError("database")
+		s.MessageReactionAdd(m.ChannelID, m.ID, "❌")
 		return
 	}
+
+	// Record combo
+	combo := service.RecordCombo(m.GuildID, m.Author.ID)
+	comboText := service.GetComboText(combo)
 
 	replyText := fmt.Sprintf("自由律俳句を検出しました！\n「%s」\n— %s", match.Text, match.Author)
 	if spoiler {
 		replyText = fmt.Sprintf("自由律俳句を検出しました！\n||「%s」||\n— %s", match.Text, match.Author)
+	}
+	if comboText != "" {
+		replyText += "\n" + comboText
 	}
 
 	msg := &discordgo.MessageSend{
@@ -1003,8 +1205,58 @@ func handleJiyuritsuMatch(s *discordgo.Session, m *discordgo.MessageCreate, matc
 
 	if _, sendErr := s.ChannelMessageSendComplex(m.ChannelID, msg); sendErr != nil {
 		logger.Warn("Failed to send jiyuritsu reply", "error", sendErr, "channel_id", m.ChannelID)
+		s.MessageReactionAdd(m.ChannelID, m.ID, "⚠️")
 		if delErr := service.DeleteSenryu(int(created.ID), m.GuildID); delErr != nil {
 			logger.Error("Failed to rollback jiyuritsu after reply failure", "error", delErr, "senryu_id", created.ID)
+		}
+	}
+}
+
+// handleGoGenRisshiDetected handles a detected 五言律詩.
+func handleGoGenRisshiDetected(s *discordgo.Session, m *discordgo.MessageCreate, phrases []string, spoiler bool) {
+	// Store first 3 phrases in Kamigo/Nakasichi/Simogo, rest in Shiku/Goku (concatenated)
+	rec := model.Senryu{
+		ServerID:  m.GuildID,
+		AuthorID:  m.Author.ID,
+		Kamigo:    phrases[0] + " " + phrases[1],
+		Nakasichi: phrases[2] + " " + phrases[3],
+		Simogo:    phrases[4] + " " + phrases[5],
+		Shiku:     phrases[6],
+		Goku:      phrases[7],
+		Type:      model.PoemTypeGoGenRisshi,
+		Spoiler:   &spoiler,
+	}
+
+	created, err := service.CreateSenryu(rec)
+	if err != nil {
+		logger.Error("Failed to create gogenrisshi record", "error", err)
+		metrics.RecordError("database")
+		s.MessageReactionAdd(m.ChannelID, m.ID, "❌")
+		return
+	}
+
+	combo := service.RecordCombo(m.GuildID, m.Author.ID)
+	comboText := service.GetComboText(combo)
+
+	fullText := strings.Join(phrases, "\n")
+	replyText := fmt.Sprintf("五言律詩を検出しました！\n```\n%s\n```", fullText)
+	if spoiler {
+		replyText = fmt.Sprintf("五言律詩を検出しました！\n||```\n%s\n```||", fullText)
+	}
+	if comboText != "" {
+		replyText += "\n" + comboText
+	}
+
+	msg := &discordgo.MessageSend{
+		Content:   replyText,
+		Reference: m.Reference(),
+	}
+
+	if _, err := s.ChannelMessageSendComplex(m.ChannelID, msg); err != nil {
+		logger.Warn("Failed to send gogenrisshi reply", "error", err, "channel_id", m.ChannelID)
+		s.MessageReactionAdd(m.ChannelID, m.ID, "⚠️")
+		if delErr := service.DeleteSenryu(int(created.ID), m.GuildID); delErr != nil {
+			logger.Error("Failed to rollback gogenrisshi after reply failure", "error", delErr, "senryu_id", created.ID)
 		}
 	}
 }

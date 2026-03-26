@@ -73,9 +73,10 @@ type BackupConfig struct {
 
 // WebConfig holds WebGUI configuration
 type WebConfig struct {
-	Enabled  bool   `koanf:"enabled"`   // Enable WebGUI server
-	Port     int    `koanf:"port"`      // WebGUI server port
-	FontPath string `koanf:"font_path"` // Path to Japanese brush font file
+	Enabled          bool   `koanf:"enabled"`            // Enable WebGUI server
+	Port             int    `koanf:"port"`               // WebGUI server port
+	FontPath         string `koanf:"font_path"`          // Path to Japanese brush font file
+	FallbackFontPath string `koanf:"fallback_font_path"` // Path to fallback font file (for missing glyphs)
 }
 
 // Load loads configuration from file and environment variables
