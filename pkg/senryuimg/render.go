@@ -73,53 +73,13 @@ func RenderSenryu(opts RenderOptions) ([]byte, error) {
 		return nil, err
 	}
 
-	// Image dimensions
-	const (
-		imgWidth  = 800
-		imgHeight = 1200
-		padding   = 80
-	)
+	// Font settings
+	mainFontSize := 56.0
+	authorFontSize := 24.0
+	charHeight := mainFontSize * 1.2
+	authorCharHeight := authorFontSize * 1.3
 
-	// Create base image
-	var baseImg *image.RGBA
-	if opts.Background != nil {
-		bg, _, err := image.Decode(bytes.NewReader(opts.Background))
-		if err != nil {
-			logger.Warn("Failed to decode background image, using white", "error", err)
-			baseImg = image.NewRGBA(image.Rect(0, 0, imgWidth, imgHeight))
-			draw.Draw(baseImg, baseImg.Bounds(), image.White, image.Point{}, draw.Src)
-		} else {
-			baseImg = resizeToFit(bg, imgWidth, imgHeight)
-		}
-	} else {
-		baseImg = image.NewRGBA(image.Rect(0, 0, imgWidth, imgHeight))
-		draw.Draw(baseImg, baseImg.Bounds(), image.White, image.Point{}, draw.Src)
-	}
-
-	dc := gg.NewContextForRGBA(baseImg)
-
-	// Main text settings
-	mainFontSize := 72.0
-	mainFace := truetype.NewFace(f, &truetype.Options{
-		Size:    mainFontSize,
-		DPI:     72,
-		Hinting: font.HintingFull,
-	})
-	defer mainFace.Close()
-
-	// Author text settings
-	authorFontSize := 32.0
-	authorFace := truetype.NewFace(f, &truetype.Options{
-		Size:    authorFontSize,
-		DPI:     72,
-		Hinting: font.HintingFull,
-	})
-	defer authorFace.Close()
-
-	// Text color
-	textColor := color.RGBA{R: 30, G: 30, B: 30, A: 255}
-
-	// Build phrase list dynamically (supports senryu, tanka, and single-line jiyuritsu)
+	// Build phrase list dynamically
 	var phrases []string
 	if opts.Kamigo != "" {
 		phrases = append(phrases, opts.Kamigo)
@@ -137,21 +97,24 @@ func RenderSenryu(opts RenderOptions) ([]byte, error) {
 		phrases = append(phrases, opts.Goku)
 	}
 
-	// Adjust column spacing based on number of phrases
 	numCols := len(phrases)
-	colSpacing := 120.0
-	if numCols >= 5 {
-		colSpacing = 100.0 // tighter for tanka
-	} else if numCols == 1 {
-		colSpacing = 0 // single column for jiyuritsu
+	if numCols == 0 {
+		return nil, fmt.Errorf("no phrases to render")
 	}
 
-	// Calculate column positions (right to left)
-	// Vertical text: each character is drawn top-to-bottom, columns flow right-to-left
-	startX := float64(imgWidth) - padding - mainFontSize/2
-	startY := float64(padding) + 40
+	// Layout parameters — compact, 575 Online style
+	colSpacing := mainFontSize * 1.4   // column width
+	padX := mainFontSize * 0.8         // horizontal padding
+	padTop := mainFontSize * 0.6       // top padding
+	padBottom := mainFontSize * 0.5    // bottom padding
+	stagger := charHeight * 0.5        // stagger offset per column (575 Online diagonal)
 
-	// Find the longest phrase for vertical centering
+	if numCols == 1 {
+		colSpacing = 0
+		stagger = 0
+	}
+
+	// Find the longest phrase
 	maxChars := 0
 	for _, p := range phrases {
 		n := utf8.RuneCountInString(p)
@@ -160,16 +123,73 @@ func RenderSenryu(opts RenderOptions) ([]byte, error) {
 		}
 	}
 
-	// Draw each phrase as a vertical column (right to left)
+	// Calculate author area height
+	authorAreaHeight := 0.0
+	authorChars := []rune(opts.AuthorName)
+	if opts.AuthorName != "" {
+		authorAreaHeight = float64(len(authorChars))*authorCharHeight + authorFontSize
+		if opts.AvatarURL != "" {
+			authorAreaHeight += 60 // hanko size + gap
+		}
+		authorAreaHeight += mainFontSize * 0.3 // gap between poem and author
+	}
+
+	// Calculate image dimensions dynamically
+	poemHeight := float64(maxChars)*charHeight + float64(numCols-1)*stagger
+	imgWidth := int(padX*2 + float64(numCols-1)*colSpacing + mainFontSize)
+	imgHeight := int(padTop + poemHeight + padBottom + authorAreaHeight)
+
+	// Minimum width/height
+	if imgWidth < 200 {
+		imgWidth = 200
+	}
+	if imgHeight < 300 {
+		imgHeight = 300
+	}
+
+	// Create base image
+	var baseImg *image.RGBA
+	if opts.Background != nil {
+		bg, _, decErr := image.Decode(bytes.NewReader(opts.Background))
+		if decErr != nil {
+			logger.Warn("Failed to decode background image, using white", "error", decErr)
+			baseImg = image.NewRGBA(image.Rect(0, 0, imgWidth, imgHeight))
+			draw.Draw(baseImg, baseImg.Bounds(), image.White, image.Point{}, draw.Src)
+		} else {
+			baseImg = resizeToFit(bg, imgWidth, imgHeight)
+		}
+	} else {
+		baseImg = image.NewRGBA(image.Rect(0, 0, imgWidth, imgHeight))
+		draw.Draw(baseImg, baseImg.Bounds(), image.White, image.Point{}, draw.Src)
+	}
+
+	dc := gg.NewContextForRGBA(baseImg)
+
+	mainFace := truetype.NewFace(f, &truetype.Options{
+		Size:    mainFontSize,
+		DPI:     72,
+		Hinting: font.HintingFull,
+	})
+	defer mainFace.Close()
+
+	authorFace := truetype.NewFace(f, &truetype.Options{
+		Size:    authorFontSize,
+		DPI:     72,
+		Hinting: font.HintingFull,
+	})
+	defer authorFace.Close()
+
+	textColor := color.RGBA{R: 30, G: 30, B: 30, A: 255}
+
+	// Draw each phrase as a vertical column (right to left, staggered 575 Online style)
+	startX := float64(imgWidth) - padX - mainFontSize/2
+
 	for col, phrase := range phrases {
 		x := startX - float64(col)*colSpacing
 		chars := []rune(phrase)
 
-		// Vertical offset: center shorter columns relative to longest
-		charHeight := mainFontSize * 1.15
-		totalHeight := float64(len(chars)) * charHeight
-		maxHeight := float64(maxChars) * charHeight
-		yOffset := startY + (maxHeight-totalHeight)/2
+		// 575 Online style: each column starts progressively lower
+		yOffset := padTop + float64(col)*stagger
 
 		for i, ch := range chars {
 			y := yOffset + float64(i)*charHeight + mainFontSize
@@ -177,28 +197,29 @@ func RenderSenryu(opts RenderOptions) ([]byte, error) {
 		}
 	}
 
-	// Draw author name (smaller, vertical, to the left of the last phrase column)
+	// Draw author name (vertical, left side, near bottom)
 	if opts.AuthorName != "" {
-		authorX := startX - float64(numCols)*colSpacing + 20
-		authorChars := []rune(opts.AuthorName)
-		authorCharHeight := authorFontSize * 1.15
+		authorX := startX - float64(numCols-1)*colSpacing - colSpacing*0.5
+		if numCols == 1 {
+			authorX = startX - mainFontSize*0.5
+		}
 
-		// Position author name at bottom area
-		authorStartY := float64(imgHeight) - padding - float64(len(authorChars))*authorCharHeight - 100
+		// Author starts after the poem area
+		authorStartY := padTop + poemHeight + mainFontSize*0.3
 
 		for i, ch := range authorChars {
 			y := authorStartY + float64(i)*authorCharHeight + authorFontSize
 			drawChar(dc, authorFace, textColor, authorX, y, ch)
 		}
 
-		// Draw hanko (stamp) below author name
+		// Draw hanko below author name
 		if opts.AvatarURL != "" {
-			hankoY := authorStartY + float64(len(authorChars))*authorCharHeight + 20
-			hankoSize := 60.0
+			hankoY := authorStartY + float64(len(authorChars))*authorCharHeight + 10
+			hankoSize := 48.0
 			hankoX := authorX - hankoSize/2 + authorFontSize/2
 
-			if err := drawHanko(dc, opts.AvatarURL, hankoX, hankoY, hankoSize); err != nil {
-				logger.Warn("Failed to draw hanko", "error", err)
+			if hankoErr := drawHanko(dc, opts.AvatarURL, hankoX, hankoY, hankoSize); hankoErr != nil {
+				logger.Warn("Failed to draw hanko", "error", hankoErr)
 			}
 		}
 	}

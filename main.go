@@ -564,11 +564,6 @@ func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 		return
 	}
 
-	// Skip senryu features in admin guild
-	if m.GuildID == permissions.GetAdminGuildID() {
-		return
-	}
-
 	if handleYomeYomuna(m, s) {
 		return
 	}
