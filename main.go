@@ -590,22 +590,31 @@ func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 				return
 			}
 
+			// Strip spaces/punctuation for length check
+			contentRunes := []rune(strings.ReplaceAll(strings.ReplaceAll(content, " ", ""), "　", ""))
+
 			// 2. Try tanka detection (5-7-5-7-7) — longer pattern first
-			t := findHaikuSafe(content, []int{5, 7, 5, 7, 7})
-			if len(t) != 0 {
-				parts := strings.Split(t[0], " ")
-				if len(parts) == 5 {
-					handlePoemDetected(s, m, parts, model.PoemTypeTanka, spoiler)
-					return
+			// Max ~50 chars to prevent false positives from long messages
+			if len(contentRunes) <= 80 {
+				t := findHaikuSafe(content, []int{5, 7, 5, 7, 7})
+				if len(t) != 0 {
+					parts := strings.Split(t[0], " ")
+					if len(parts) == 5 {
+						handlePoemDetected(s, m, parts, model.PoemTypeTanka, spoiler)
+						return
+					}
 				}
 			}
 
 			// 3. Try senryu detection (5-7-5)
-			h := findHaikuSafe(content, []int{5, 7, 5})
-			if len(h) != 0 {
-				parts := strings.Split(h[0], " ")
-				if len(parts) == 3 {
-					handlePoemDetected(s, m, parts, model.PoemTypeSenryu, spoiler)
+			// Max ~30 chars to prevent false positives from long messages
+			if len(contentRunes) <= 50 {
+				h := findHaikuSafe(content, []int{5, 7, 5})
+				if len(h) != 0 {
+					parts := strings.Split(h[0], " ")
+					if len(parts) == 3 {
+						handlePoemDetected(s, m, parts, model.PoemTypeSenryu, spoiler)
+					}
 				}
 			}
 		}

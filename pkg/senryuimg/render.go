@@ -73,12 +73,6 @@ func RenderSenryu(opts RenderOptions) ([]byte, error) {
 		return nil, err
 	}
 
-	// Font settings
-	mainFontSize := 56.0
-	authorFontSize := 24.0
-	charHeight := mainFontSize * 1.2
-	authorCharHeight := authorFontSize * 1.3
-
 	// Build phrase list dynamically
 	var phrases []string
 	if opts.Kamigo != "" {
@@ -102,18 +96,6 @@ func RenderSenryu(opts RenderOptions) ([]byte, error) {
 		return nil, fmt.Errorf("no phrases to render")
 	}
 
-	// Layout parameters — compact, 575 Online style
-	colSpacing := mainFontSize * 1.4   // column width
-	padX := mainFontSize * 0.8         // horizontal padding
-	padTop := mainFontSize * 0.6       // top padding
-	padBottom := mainFontSize * 0.5    // bottom padding
-	stagger := charHeight * 0.5        // stagger offset per column (575 Online diagonal)
-
-	if numCols == 1 {
-		colSpacing = 0
-		stagger = 0
-	}
-
 	// Find the longest phrase
 	maxChars := 0
 	for _, p := range phrases {
@@ -123,29 +105,61 @@ func RenderSenryu(opts RenderOptions) ([]byte, error) {
 		}
 	}
 
-	// Calculate author area height
-	authorAreaHeight := 0.0
-	authorChars := []rune(opts.AuthorName)
-	if opts.AuthorName != "" {
-		authorAreaHeight = float64(len(authorChars))*authorCharHeight + authorFontSize
-		if opts.AvatarURL != "" {
-			authorAreaHeight += 60 // hanko size + gap
+	// Font settings — auto-scale to fit max height
+	const maxImgHeight = 600.0
+	mainFontSize := 56.0
+
+	// Calculate layout with current font size and check if it fits
+	calcLayout := func(fontSize float64) (charH, authCharH, authFontSz, colSpc, pX, pTop, pBot, stg, poemH, authAreaH float64, w, h int) {
+		authFontSz = fontSize * 0.43
+		charH = fontSize * 1.2
+		authCharH = authFontSz * 1.3
+		colSpc = fontSize * 1.4
+		pX = fontSize * 0.8
+		pTop = fontSize * 0.6
+		pBot = fontSize * 0.5
+		stg = charH * 0.5
+
+		if numCols == 1 {
+			colSpc = 0
+			stg = 0
 		}
-		authorAreaHeight += mainFontSize * 0.3 // gap between poem and author
+
+		authAreaH = 0
+		if opts.AuthorName != "" {
+			authAreaH = float64(len([]rune(opts.AuthorName)))*authCharH + authFontSz
+			if opts.AvatarURL != "" {
+				authAreaH += fontSize * 0.9
+			}
+			authAreaH += fontSize * 0.3
+		}
+
+		poemH = float64(maxChars)*charH + float64(numCols-1)*stg
+		w = int(pX*2 + float64(numCols-1)*colSpc + fontSize)
+		h = int(pTop + poemH + pBot + authAreaH)
+		return
 	}
 
-	// Calculate image dimensions dynamically
-	poemHeight := float64(maxChars)*charHeight + float64(numCols-1)*stagger
-	imgWidth := int(padX*2 + float64(numCols-1)*colSpacing + mainFontSize)
-	imgHeight := int(padTop + poemHeight + padBottom + authorAreaHeight)
+	// Scale down font if image would be too tall
+	_, _, _, _, _, _, _, _, _, _, _, testH := calcLayout(mainFontSize)
+	if float64(testH) > maxImgHeight {
+		mainFontSize = mainFontSize * maxImgHeight / float64(testH)
+		if mainFontSize < 20 {
+			mainFontSize = 20
+		}
+	}
+
+	_, _, authorFontSize, colSpacing, padX, padTop, _, stagger, poemHeight, _, imgWidth, imgHeight := calcLayout(mainFontSize)
 
 	// Minimum width/height
 	if imgWidth < 200 {
 		imgWidth = 200
 	}
-	if imgHeight < 300 {
-		imgHeight = 300
+	if imgHeight < 200 {
+		imgHeight = 200
 	}
+
+	authorChars := []rune(opts.AuthorName)
 
 	// Create base image
 	var baseImg *image.RGBA
@@ -183,6 +197,7 @@ func RenderSenryu(opts RenderOptions) ([]byte, error) {
 
 	// Draw each phrase as a vertical column (right to left, staggered 575 Online style)
 	startX := float64(imgWidth) - padX - mainFontSize/2
+	cHeight := mainFontSize * 1.2
 
 	for col, phrase := range phrases {
 		x := startX - float64(col)*colSpacing
@@ -192,7 +207,7 @@ func RenderSenryu(opts RenderOptions) ([]byte, error) {
 		yOffset := padTop + float64(col)*stagger
 
 		for i, ch := range chars {
-			y := yOffset + float64(i)*charHeight + mainFontSize
+			y := yOffset + float64(i)*cHeight + mainFontSize
 			drawChar(dc, mainFace, textColor, x, y, ch)
 		}
 	}
@@ -206,16 +221,17 @@ func RenderSenryu(opts RenderOptions) ([]byte, error) {
 
 		// Author starts after the poem area
 		authorStartY := padTop + poemHeight + mainFontSize*0.3
+		aCharH := authorFontSize * 1.3
 
 		for i, ch := range authorChars {
-			y := authorStartY + float64(i)*authorCharHeight + authorFontSize
+			y := authorStartY + float64(i)*aCharH + authorFontSize
 			drawChar(dc, authorFace, textColor, authorX, y, ch)
 		}
 
 		// Draw hanko below author name
 		if opts.AvatarURL != "" {
-			hankoY := authorStartY + float64(len(authorChars))*authorCharHeight + 10
-			hankoSize := 48.0
+			hankoY := authorStartY + float64(len(authorChars))*aCharH + 10
+			hankoSize := mainFontSize * 0.85
 			hankoX := authorX - hankoSize/2 + authorFontSize/2
 
 			if hankoErr := drawHanko(dc, opts.AvatarURL, hankoX, hankoY, hankoSize); hankoErr != nil {
