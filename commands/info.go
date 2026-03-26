@@ -2,7 +2,6 @@ package commands
 
 import (
 	"fmt"
-	"math"
 	"time"
 
 	"github.com/bwmarrin/discordgo"
@@ -27,7 +26,7 @@ func HandleInfoCommand(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	timeoutStatus := "⏱️ タイムアウト: **なし**"
 	remaining := service.GetTimeoutRemaining(channelID, userID)
 	if remaining > 0 {
-		timeoutStatus = fmt.Sprintf("⏱️ タイムアウト: **有効**（残り %s）", formatDuration(remaining))
+		timeoutStatus = fmt.Sprintf("⏱️ タイムアウト: **有効**（残り %s）", formatRemainingDuration(remaining))
 	}
 
 	// Detection opt-out status
@@ -74,9 +73,13 @@ func HandleInfoCommand(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	})
 }
 
-// formatDuration formats a duration into a human-readable Japanese string.
-func formatDuration(d time.Duration) string {
-	totalSeconds := int(math.Ceil(d.Seconds()))
+// formatRemainingDuration formats a remaining timeout duration into a human-readable Japanese string.
+// Unlike formatDuration (in timeout.go), this includes seconds for short durations.
+func formatRemainingDuration(d time.Duration) string {
+	totalSeconds := int(d.Seconds())
+	if totalSeconds <= 0 {
+		totalSeconds = 1
+	}
 	hours := totalSeconds / 3600
 	minutes := (totalSeconds % 3600) / 60
 	seconds := totalSeconds % 60
